@@ -3,3 +3,7 @@ export * from "./csv.js";
 export * from "./ingestion.js";
 export * from "./features.js";
 export * from "./segments.js";
+export * from "./suppression.js";
+export * from "./holdout.js";
+export * from "./triggers.js";
+export * from "./interpolate.js";
