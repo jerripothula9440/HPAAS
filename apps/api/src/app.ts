@@ -19,6 +19,17 @@ export const app: express.Express = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
+// Root: a browser hitting the bare API host should see what this is, not
+// Express's default "Cannot GET /".
+app.get("/", (_req, res) =>
+  res.json({
+    service: "HPAS API",
+    status: "ok",
+    docs: "machine API under /v1 (X-API-Key), dashboard API under /v1/app (Bearer)",
+    health: "/health",
+  })
+);
+
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.post("/v1/auth/login", loginHandler);
