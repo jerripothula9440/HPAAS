@@ -13,7 +13,8 @@
     "dev:dashboard": "pnpm --filter @hpas/dashboard dev",
     "worker": "pnpm --filter @hpas/worker run-job",
     "smoke": "pnpm --filter @hpas/worker smoke",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "build:packages": "pnpm --filter \"./packages/*\" run build"
   },
   "devDependencies": {
     "typescript": "^5.5.4"
