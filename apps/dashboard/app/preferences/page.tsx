@@ -13,6 +13,19 @@ interface Pref {
   maxPerCustomerPerWeek: number;
 }
 
+interface CouponTier {
+  minAmount: number;
+  discountType: "percent" | "flat";
+  discountValue: number;
+  validityDays: number;
+}
+
+interface Engagement {
+  receipts: { enabled: boolean; showItems: boolean; footerNote?: string };
+  coupons: { enabled: boolean; tiers: CouponTier[]; minDaysBetweenCoupons: number; codePrefix?: string };
+  qrCapture: { enabled: boolean; messageTemplate?: string };
+}
+
 const PREF_META: Record<string, { label: string; hint: string }> = {
   winback: {
     label: "Win-back messages",
@@ -38,6 +51,10 @@ export default function PreferencesPage() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
 
+  const [engage, setEngage] = useState<Engagement | null>(null);
+  const [engageSaved, setEngageSaved] = useState(false);
+  const [engageError, setEngageError] = useState("");
+
   useEffect(() => {
     api<{ preferences: Pref[] }>("/preferences")
       .then((r) => {
@@ -45,7 +62,27 @@ export default function PreferencesPage() {
         setCap(Math.max(...r.preferences.map((p) => p.maxPerCustomerPerWeek), 1));
       })
       .catch((e) => setError(String(e.message ?? e)));
+    api<Engagement>("/settings/engagement")
+      .then(setEngage)
+      .catch((e) => setEngageError(String(e.message ?? e)));
   }, []);
+
+  async function saveEngagement(next: Engagement) {
+    setEngage(next);
+    setEngageSaved(false);
+    setEngageError("");
+    try {
+      const saved = await api<Engagement>("/settings/engagement", {
+        method: "PUT",
+        body: JSON.stringify(next),
+      });
+      setEngage(saved);
+      setEngageSaved(true);
+      setTimeout(() => setEngageSaved(false), 2000);
+    } catch (e) {
+      setEngageError(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   async function save(next: Pref[], nextCap: number) {
     setSaved(false);
@@ -122,6 +159,168 @@ export default function PreferencesPage() {
               {saved && <span className="good-text">Saved ✓</span>}
             </div>
           </div>
+
+          {engageError && <div className="error-text">{engageError}</div>}
+          {engage && (
+            <div className="card" style={{ marginTop: 20 }}>
+              <div className="section-title">Bills &amp; coupons on WhatsApp</div>
+              <div className="muted" style={{ marginBottom: 14 }}>
+                Right after a billed purchase, the customer gets their bill, loyalty points, and —
+                when your rules below match — a personal coupon code tied to their number.
+              </div>
+
+              <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 10 }}>
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={engage.receipts.enabled}
+                    onChange={(e) =>
+                      saveEngagement({ ...engage, receipts: { ...engage.receipts, enabled: e.target.checked } })
+                    }
+                  />
+                  <span className="slider" />
+                </label>
+                <div>
+                  <div style={{ fontWeight: 650 }}>Send the bill on WhatsApp</div>
+                  <div className="muted" style={{ fontSize: "0.9rem" }}>
+                    Total, items, and points earned — sent the moment the purchase is billed.
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 10 }}>
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={engage.receipts.showItems}
+                    onChange={(e) =>
+                      saveEngagement({ ...engage, receipts: { ...engage.receipts, showItems: e.target.checked } })
+                    }
+                  />
+                  <span className="slider" />
+                </label>
+                <div style={{ fontWeight: 650 }}>Show item lines on the bill</div>
+              </div>
+
+              <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 16 }}>
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={engage.coupons.enabled}
+                    onChange={(e) =>
+                      saveEngagement({ ...engage, coupons: { ...engage.coupons, enabled: e.target.checked } })
+                    }
+                  />
+                  <span className="slider" />
+                </label>
+                <div>
+                  <div style={{ fontWeight: 650 }}>Personal coupons</div>
+                  <div className="muted" style={{ fontSize: "0.9rem" }}>
+                    Needs at least one reward rule below to switch on.
+                  </div>
+                </div>
+              </div>
+
+              <div className="section-title" style={{ fontSize: "0.95rem" }}>Reward rules</div>
+              <div className="muted" style={{ marginBottom: 8, fontSize: "0.9rem" }}>
+                Bills at or above the amount earn the reward; the biggest matching amount wins.
+              </div>
+              <table style={{ marginBottom: 10 }}>
+                <thead>
+                  <tr>
+                    <th>Bill at least (₹)</th>
+                    <th>Reward</th>
+                    <th>Value</th>
+                    <th>Valid for (days)</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {engage.coupons.tiers.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="muted">No rules yet — add one to start issuing coupons.</td>
+                    </tr>
+                  )}
+                  {engage.coupons.tiers.map((t, i) => {
+                    const update = (patch: Partial<CouponTier>) => {
+                      const tiers = engage.coupons.tiers.map((x, j) => (j === i ? { ...x, ...patch } : x));
+                      setEngage({ ...engage, coupons: { ...engage.coupons, tiers } });
+                    };
+                    return (
+                      <tr key={i}>
+                        <td>
+                          <input type="number" min={0} value={t.minAmount} style={{ width: 110 }}
+                            onChange={(e) => update({ minAmount: Number(e.target.value) || 0 })} />
+                        </td>
+                        <td>
+                          <select value={t.discountType}
+                            onChange={(e) => update({ discountType: e.target.value as CouponTier["discountType"] })}>
+                            <option value="percent">% off</option>
+                            <option value="flat">₹ off</option>
+                          </select>
+                        </td>
+                        <td>
+                          <input type="number" min={0} value={t.discountValue} style={{ width: 90 }}
+                            onChange={(e) => update({ discountValue: Number(e.target.value) || 0 })} />
+                        </td>
+                        <td>
+                          <input type="number" min={1} max={365} value={t.validityDays} style={{ width: 90 }}
+                            onChange={(e) => update({ validityDays: Number(e.target.value) || 30 })} />
+                        </td>
+                        <td>
+                          <button className="btn" onClick={() => {
+                            const tiers = engage.coupons.tiers.filter((_, j) => j !== i);
+                            setEngage({ ...engage, coupons: { ...engage.coupons, tiers } });
+                          }}>
+                            remove
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  className="btn"
+                  onClick={() =>
+                    setEngage({
+                      ...engage,
+                      coupons: {
+                        ...engage.coupons,
+                        tiers: [
+                          ...engage.coupons.tiers,
+                          { minAmount: 500, discountType: "percent", discountValue: 10, validityDays: 30 },
+                        ],
+                      },
+                    })
+                  }
+                >
+                  + Add rule
+                </button>
+                <span className="muted">At most one coupon per customer every</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={90}
+                  value={engage.coupons.minDaysBetweenCoupons}
+                  style={{ width: 80 }}
+                  onChange={(e) =>
+                    setEngage({
+                      ...engage,
+                      coupons: { ...engage.coupons, minDaysBetweenCoupons: Number(e.target.value) || 0 },
+                    })
+                  }
+                />
+                <span className="muted">days</span>
+                <button className="btn btn-primary" onClick={() => saveEngagement(engage)}>
+                  Save coupon rules
+                </button>
+                {engageSaved && <span className="good-text">Saved ✓</span>}
+              </div>
+            </div>
+          )}
         </>
       )}
     </AppShell>

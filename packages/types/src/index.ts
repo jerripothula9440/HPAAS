@@ -91,6 +91,48 @@ export interface LoyaltyConfig {
   pointValueRupees: number;
 }
 
+/** One coupon rule: bills at or above minAmount earn this reward. */
+export interface CouponTier {
+  /** Inclusive lower bound on the bill amount (₹) for this tier. */
+  minAmount: number;
+  discountType: "percent" | "flat";
+  /** Percent off (e.g. 10) or flat rupees off, per discountType. */
+  discountValue: number;
+  /** Days until the issued coupon expires. */
+  validityDays: number;
+}
+
+/**
+ * Admin-configurable coupon issuance rules. Evaluated deterministically at
+ * receipt time: the highest matching tier wins; the frequency guard stops
+ * a regular from collecting a coupon on every single visit.
+ */
+export interface CouponConfig {
+  enabled: boolean;
+  /** Highest matching minAmount wins. Empty = no coupons ever issued. */
+  tiers: CouponTier[];
+  /** Minimum days between two coupons for the same customer. */
+  minDaysBetweenCoupons: number;
+  /** Prefix of generated codes, e.g. "DADU" → DADU-CP-X7K2M9. Defaults from slug. */
+  codePrefix?: string;
+}
+
+/** WhatsApp bill sent right after an offline purchase (streaming POS only). */
+export interface ReceiptConfig {
+  enabled: boolean;
+  /** Include itemized lines, not just the total. */
+  showItems: boolean;
+  /** Optional closing line, e.g. "See you soon!" */
+  footerNote?: string;
+}
+
+/** Per-order QR capture of online (Swiggy/Zomato/...) customers. */
+export interface QrCaptureConfig {
+  enabled: boolean;
+  /** Pre-drafted wa.me message; {{token}} and {{shop_name}} are filled in. */
+  messageTemplate?: string;
+}
+
 export interface TenantConfig {
   slug: string;
   branding: TenantBranding;
@@ -102,11 +144,32 @@ export interface TenantConfig {
   channels: ChannelSettings;
   /** Optional — defaults applied in code when absent (see loyaltyConfig()). */
   loyalty?: LoyaltyConfig;
+  /** Optional — defaults applied in code when absent (see receiptConfig()). */
+  receipts?: ReceiptConfig;
+  /** Optional — defaults applied in code when absent (see couponConfig()). */
+  coupons?: CouponConfig;
+  /** Optional — defaults applied in code when absent (see qrCaptureConfig()). */
+  qrCapture?: QrCaptureConfig;
 }
 
 /** Loyalty settings with defaults for tenants configured before the feature existed. */
 export function loyaltyConfig(config: TenantConfig): LoyaltyConfig {
   return config.loyalty ?? { enabled: true, pointsPerRupee: 0.1, pointValueRupees: 0.25 };
+}
+
+/** Receipt settings with defaults for tenants configured before the feature existed. */
+export function receiptConfig(config: TenantConfig): ReceiptConfig {
+  return config.receipts ?? { enabled: true, showItems: true };
+}
+
+/** Coupon settings with defaults: off until the admin configures tiers. */
+export function couponConfig(config: TenantConfig): CouponConfig {
+  return config.coupons ?? { enabled: false, tiers: [], minDaysBetweenCoupons: 7 };
+}
+
+/** QR capture settings with defaults for tenants configured before the feature existed. */
+export function qrCaptureConfig(config: TenantConfig): QrCaptureConfig {
+  return config.qrCapture ?? { enabled: true };
 }
 
 export interface Tenant {
@@ -371,6 +434,69 @@ export interface LoyaltyEntry {
   points: number;
   reason: string;
   createdAt: Date;
+}
+
+// ---------- Coupons ----------
+
+export type CouponSource = "receipt" | "qr_welcome" | "manual";
+
+/** A personalized coupon issued to one customer; code is globally unique. */
+export interface Coupon {
+  id: string;
+  tenantId: string;
+  profileId: string;
+  phone: string;
+  code: string;
+  discountType: "percent" | "flat";
+  discountValue: number;
+  issuedForAmount: number;
+  source: CouponSource;
+  expiresAt: Date;
+  redeemedAt: Date | null;
+  createdAt: Date;
+}
+
+// ---------- QR order capture (online/aggregator customers) ----------
+
+export type QrOrderStatus = "pending" | "claimed";
+
+/**
+ * One QR per online order. Scanning opens WhatsApp with the token
+ * pre-drafted; the customer sending it claims the order and enters
+ * the system with their phone number attached to real order data.
+ */
+export interface QrOrder {
+  id: string;
+  tenantId: string;
+  /** Unguessable short token, e.g. "Q-7KX2M9P4QA" — also the claim URL path. */
+  token: string;
+  /** The aggregator's order id, for the shop's own reconciliation. */
+  orderRef: string;
+  /** Where the order came from: swiggy | zomato | ondc | other. */
+  source: string;
+  amount: number;
+  items: EventItem[];
+  status: QrOrderStatus;
+  claimedProfileId: string | null;
+  claimedAt: Date | null;
+  createdAt: Date;
+}
+
+// ---------- Transactional (system) messages ----------
+// Receipts and QR welcomes. Separate from campaign messages AND direct
+// messages so attribution, hold-outs, and the owner's 1:1 history stay clean.
+
+export type TransactionalKind = "receipt" | "qr_welcome";
+
+export interface TransactionalMessage {
+  id: string;
+  tenantId: string;
+  profileId: string;
+  kind: TransactionalKind;
+  channel: Channel;
+  body: string;
+  status: "sent" | "failed";
+  sentAt: Date;
 }
 
 // ---------- Direct (1:1) messages ----------

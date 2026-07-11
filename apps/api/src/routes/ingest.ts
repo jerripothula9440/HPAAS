@@ -7,6 +7,7 @@ import {
   parseCsv,
   type TrackPayload,
 } from "@hpas/core";
+import { sendPurchaseReceipts } from "@hpas/channels";
 import { createUpload, finishUpload, listUploads } from "@hpas/db";
 
 export const ingestRouter: import("express").Router = Router();
@@ -32,7 +33,13 @@ ingestRouter.post("/events", async (req, res) => {
   });
 
   const { processed } = await ingestNormalizedEvents(tenant, events);
-  res.status(errors.length && !processed ? 400 : 200).json({ processed, errors });
+
+  // Live orders (this path only — CSV uploads are history backfills) get a
+  // WhatsApp bill: total, loyalty points, and a coupon when the tenant's
+  // coupon rules match. Transactional, so no campaign approval gate.
+  const receipts = await sendPurchaseReceipts(tenant, events);
+
+  res.status(errors.length && !processed ? 400 : 200).json({ processed, errors, receipts });
 });
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });

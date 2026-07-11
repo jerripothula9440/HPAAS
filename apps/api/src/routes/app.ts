@@ -22,12 +22,20 @@ import {
   listSegments,
   messagesForCampaign,
   monthlyRepeatRate,
+  patchTenantConfig,
   setCampaignCopy,
   setCampaignStatus,
   topProfilesByLtv,
   upsertPreference,
 } from "@hpas/db";
-import { ALL_CAMPAIGN_TYPES, type CampaignType } from "@hpas/types";
+import {
+  ALL_CAMPAIGN_TYPES,
+  couponConfig,
+  qrCaptureConfig,
+  receiptConfig,
+  type CampaignType,
+  type CouponTier,
+} from "@hpas/types";
 
 export const appRouter: import("express").Router = Router();
 
@@ -268,6 +276,63 @@ appRouter.put("/preferences", async (req, res) => {
     });
   }
   res.json({ preferences: await getPreferences(tenant.id) });
+});
+
+// ---------- engagement settings (receipts, coupons, QR capture) ----------
+// Admin-editable at runtime; persisted into tenants.config so onboarding
+// stays zero-code (the same fields can be pre-seeded in config.json).
+
+appRouter.get("/settings/engagement", (req, res) => {
+  const config = req.tenant!.config;
+  res.json({
+    receipts: receiptConfig(config),
+    coupons: couponConfig(config),
+    qrCapture: qrCaptureConfig(config),
+  });
+});
+
+appRouter.put("/settings/engagement", async (req, res) => {
+  const tenant = req.tenant!;
+  const body = req.body ?? {};
+
+  const tiers: CouponTier[] = (Array.isArray(body.coupons?.tiers) ? body.coupons.tiers : [])
+    .map((t: Partial<CouponTier>) => ({
+      minAmount: Math.max(0, Number(t.minAmount) || 0),
+      discountType: t.discountType === "flat" ? ("flat" as const) : ("percent" as const),
+      discountValue: Math.max(0, Number(t.discountValue) || 0),
+      validityDays: Math.max(1, Math.min(365, Number(t.validityDays) || 30)),
+    }))
+    .filter((t: CouponTier) => t.discountValue > 0);
+
+  if (body.qrCapture?.messageTemplate && !String(body.qrCapture.messageTemplate).includes("{{token}}")) {
+    res.status(400).json({ error: "qrCapture.messageTemplate must include {{token}} — that's how the scan links back to the order" });
+    return;
+  }
+
+  const patch = {
+    receipts: {
+      enabled: Boolean(body.receipts?.enabled),
+      showItems: Boolean(body.receipts?.showItems ?? true),
+      ...(body.receipts?.footerNote ? { footerNote: String(body.receipts.footerNote).slice(0, 200) } : {}),
+    },
+    coupons: {
+      enabled: Boolean(body.coupons?.enabled) && tiers.length > 0,
+      tiers,
+      minDaysBetweenCoupons: Math.max(0, Math.min(90, Number(body.coupons?.minDaysBetweenCoupons) || 7)),
+      ...(body.coupons?.codePrefix
+        ? { codePrefix: String(body.coupons.codePrefix).replace(/[^a-zA-Z]/g, "").toUpperCase().slice(0, 6) }
+        : {}),
+    },
+    qrCapture: {
+      enabled: Boolean(body.qrCapture?.enabled ?? true),
+      ...(body.qrCapture?.messageTemplate
+        ? { messageTemplate: String(body.qrCapture.messageTemplate).slice(0, 300) }
+        : {}),
+    },
+  };
+
+  await patchTenantConfig(tenant.id, patch);
+  res.json(patch);
 });
 
 // ---------- settings ----------

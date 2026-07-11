@@ -24,6 +24,28 @@
     "pointsPerRupee": 0.1,
     "pointValueRupees": 0.25
   },
+  "receipts": {
+    "enabled": true,
+    "showItems": true,
+    "footerNote": "optional closing line on every WhatsApp bill (delete if unwanted)"
+  },
+  "coupons": {
+    "enabled": false,
+    "tiers": [
+      {
+        "minAmount": 500,
+        "discountType": "percent",
+        "discountValue": 10,
+        "validityDays": 30
+      }
+    ],
+    "minDaysBetweenCoupons": 14,
+    "codePrefix": "SHOP"
+  },
+  "qrCapture": {
+    "enabled": true,
+    "messageTemplate": "Hi {{shop_name}}! Adding my order {{token}} to my rewards ✨"
+  },
   "brandVoice": {
     "tone": "describe how the shop talks to customers, e.g. 'friendly and to the point'",
     "language": "en-IN",

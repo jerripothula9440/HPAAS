@@ -38,6 +38,35 @@ Points program (optional — sensible defaults apply if omitted):
   from purchase history on first seed.
 - `pointValueRupees` — display value of one point when redeeming.
 
+### `receipts`
+The WhatsApp bill sent right after a *live* (streaming `POST /v1/events`)
+purchase — CSV uploads are history backfills and never trigger sends
+(optional — defaults to enabled):
+- `enabled` — send the bill (total, points earned, coupon if issued).
+- `showItems` — include itemized lines, not just the total.
+- `footerNote` — optional closing line in the shop's voice.
+
+### `coupons`
+Personalized coupon codes issued alongside the receipt, stored against the
+customer's number (optional — defaults to off). Also editable at runtime
+from the dashboard Preferences page:
+- `enabled` — master switch; needs at least one tier.
+- `tiers[]` — `minAmount` (bill ₹ at or above), `discountType`
+  (`percent`|`flat`), `discountValue`, `validityDays`. The highest matching
+  `minAmount` wins.
+- `minDaysBetweenCoupons` — frequency guard: no customer gets two coupons
+  inside this window, however often they shop.
+- `codePrefix` — 2-6 letters on generated codes, e.g. `DADU` → `DADU-CP-X7K2M9`.
+  Customers redeem by showing the code (POS calls `POST /v1/redemptions`) or
+  replying with it on WhatsApp.
+
+### `qrCapture`
+Per-order QR codes that capture online (Swiggy/Zomato/ONDC) customers whose
+numbers the aggregators won't share (optional — defaults to enabled):
+- `enabled` — allow creating QR orders (`POST /v1/qr-orders` or the Data page).
+- `messageTemplate` — the pre-drafted WhatsApp message the customer sends;
+  must contain `{{token}}` (the order link) and may use `{{shop_name}}`.
+
 ### `brandVoice`
 Fed verbatim to the AI copy generator (`packages/ai`):
 - `tone` — one sentence describing how the shop talks.

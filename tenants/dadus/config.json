@@ -24,6 +24,25 @@
     "pointsPerRupee": 0.1,
     "pointValueRupees": 0.25
   },
+  "receipts": {
+    "enabled": true,
+    "showItems": true,
+    "footerNote": "Namaste ji, see you again soon! 🙏"
+  },
+  "coupons": {
+    "enabled": true,
+    "tiers": [
+      { "minAmount": 300, "discountType": "percent", "discountValue": 5, "validityDays": 21 },
+      { "minAmount": 800, "discountType": "percent", "discountValue": 10, "validityDays": 30 },
+      { "minAmount": 2000, "discountType": "flat", "discountValue": 250, "validityDays": 45 }
+    ],
+    "minDaysBetweenCoupons": 14,
+    "codePrefix": "DADU"
+  },
+  "qrCapture": {
+    "enabled": true,
+    "messageTemplate": "Namaste Dadu's! Adding my order {{token}} to my rewards ✨"
+  },
   "brandVoice": {
     "tone": "warm, familial, like a trusted neighbourhood halwai; light Hindi-English mix",
     "language": "en-IN",

@@ -19,6 +19,11 @@ graph TD
         PHONE --> INGEST[ingestion]
         INGEST --> PROFILES[(profiles + events)]
         INGEST --> LOYALTY[loyalty-points]
+        QRCAP[qr-order-capture - QR → wa.me pre-draft] -->|inbound claim via webhook| INGEST
+        INGEST -->|live /v1/events only| RECEIPTS[order-receipts - bill + points + coupon]
+        COUPONS[coupon-engine - tiered rules] --> RECEIPTS
+        COUPONS --> QRCAP
+        LOYALTY --> RECEIPTS
     end
 
     PROFILES --> FEATURES[feature-computation RFM/affinity]
@@ -72,9 +77,10 @@ graph TD
 - **`db-layer`** — Postgres client, SQL migrations runner, and the tenant-scoped typed query
   layer (repos). Migrations: `001_init.sql` (core schema), `002_call_list_csv.sql`
   (call-list CSV stored in DB — Vercel-safe), `003_ai_native.sql` (menu, loyalty ledger,
-  direct messages, counter-card cache, segments).
+  direct messages, counter-card cache, segments), `004_receipts_coupons_qr.sql` (coupons,
+  qr_orders, transactional_messages).
   *Files:* `packages/db/src/client.ts`, `migrate.ts`, `repos.ts`, `repos-ai.ts`,
-  `packages/db/migrations/*.sql`.
+  `repos-engage.ts`, `packages/db/migrations/*.sql`.
   *Depends on:* `shared-types`. *Used by:* all core/jobs/channels/api nodes.
 
 - **`tenant-onboarding`** — A shop = a config folder, never code. `tenants/_template/`
@@ -104,10 +110,25 @@ graph TD
 
 - **`ingestion`** — Both paths (CSV upload with per-tenant column mapping + streaming
   `POST /v1/events`) funnel through `ingestNormalizedEvents`: profile upsert + append-only
-  events, identical behavior. Earns loyalty points inline.
+  events, identical behavior. Earns loyalty points inline. The streaming path (live orders
+  only — never CSV backfills) additionally triggers `order-receipts` after ingest.
   *Files:* `packages/core/src/ingestion.ts`, `apps/api/src/routes/ingest.ts`.
   *Depends on:* `phone-normalization`, `csv-parsing`, `loyalty-points`, `db-layer`.
-  *Used by:* `tenant-onboarding`, `feature-computation` (post-ingest recompute).
+  *Used by:* `tenant-onboarding`, `feature-computation` (post-ingest recompute),
+  `order-receipts` (streaming path), `qr-order-capture` (claims ingest through the same path).
+
+- **`qr-order-capture`** — Brings online/aggregator (Swiggy/Zomato) customers into the
+  system: one unguessable token + QR per online order (`POST /v1/qr-orders`, API key or
+  dashboard). Scanning hits the public `GET /q/:token` redirect → wa.me deep link with the
+  token pre-drafted; the customer pressing send fires the inbound webhook, which ingests the
+  order as a purchase (points included), claims the token idempotently, and replies with a
+  welcome + optional coupon. Printable SVG at `GET /q/:token/qr.svg`. Config:
+  `qrCapture.{enabled,messageTemplate}` in tenant config (template must keep `{{token}}`).
+  *Files:* `apps/api/src/routes/qr-orders.ts`, claim handling in
+  `packages/channels/src/whatsapp.ts`, repos in `packages/db/src/repos-engage.ts`.
+  *Depends on:* `ingestion`, `whatsapp-webhooks`, `coupon-engine`, `order-receipts`
+  (welcome sender), `phone-normalization`, `db-layer`.
+  *Used by:* `dashboard-app` (/data QR desk).
 
 ## 4. Deterministic campaign brain (`packages/core` — no LLM anywhere here)
 
@@ -157,6 +178,22 @@ graph TD
   *Files:* `packages/core/src/interpolate.ts`.
   *Depends on:* `feature-computation`. *Used by:* `campaign-sender`, `ai-campaign-copy` (validation).
 
+- **`coupon-engine`** — Deterministic personalized-coupon issuance, no LLM: admin-configured
+  tiers (bill amount → percent/flat reward + validity) with a per-customer frequency guard
+  (`minDaysBetweenCoupons`); highest matching tier wins. Codes (`DADU-CP-X7K2M9`) are stored
+  against profile + phone and deliberately match the campaign redemption-code shape, so they
+  redeem through the same two paths: typed back on WhatsApp (inbound webhook) or at the till
+  (`POST /v1/redemptions`). Config `coupons.{enabled,tiers,minDaysBetweenCoupons,codePrefix}`
+  is editable live via `GET/PUT /v1/app/settings/engagement` (persisted with
+  `patchTenantConfig`) or pre-seeded in `config.json`. Also owns the QR-order token
+  generator/regex.
+  *Files:* `packages/core/src/coupons.ts`, repos in `packages/db/src/repos-engage.ts`,
+  redemption in `apps/api/src/routes/redemptions.ts` + `packages/channels/src/whatsapp.ts`,
+  settings in `apps/api/src/routes/app.ts`.
+  *Depends on:* `shared-types` (coupon config), `db-layer`.
+  *Used by:* `order-receipts`, `qr-order-capture`, `whatsapp-webhooks` (redeem),
+  `dashboard-app` (/preferences rules editor).
+
 - **`attribution`** — Messaged vs hold-out control per campaign: incremental repeat-purchase
   rate + incremental revenue, plus hard redemptions joined via per-message codes.
   Deterministic SQL + arithmetic.
@@ -178,9 +215,11 @@ graph TD
   *Depends on:* `db-layer`. *Used by:* `channel-interface`, `campaign-sender`, `direct-messages`.
 
 - **`whatsapp-webhooks`** — Per-tenant-slug webhook endpoints (Meta verify handshake,
-  delivery receipts, inbound replies, STOP opt-outs, redemption codes typed back).
+  delivery receipts, inbound replies, STOP opt-outs, redemption codes typed back, coupon
+  codes redeemed, QR-order tokens claimed).
   *Files:* `apps/api/src/routes/webhooks.ts`, handlers in `packages/channels/src/whatsapp.ts`.
-  *Depends on:* `phone-normalization`, `db-layer`. *Used by:* `attribution`, `email-fallback` (delivery status).
+  *Depends on:* `phone-normalization`, `coupon-engine`, `db-layer`. *Used by:* `attribution`,
+  `email-fallback` (delivery status), `qr-order-capture` (claim entry point).
 
 - **`email-adapter`** — Resend-shaped fallback channel; `EMAIL_MODE=stub` default.
   *Files:* `packages/channels/src/email.ts`. *Used by:* `email-fallback`.
@@ -209,6 +248,19 @@ graph TD
   `direct_messages`, never in campaign messages — attribution and hold-out stay clean.
   *Files:* `packages/channels/src/direct.ts`, route in `apps/api/src/routes/counter.ts`.
   *Depends on:* `whatsapp-adapter`, `phone-normalization`. *Used by:* `counter-card` page/API.
+
+- **`order-receipts`** — Transactional WhatsApp sends triggered by the customer's own
+  purchase (so no campaign approval gate; opt-outs still honored): the itemized bill +
+  loyalty points earned/balance + a `coupon-engine` coupon when rules match, fired only from
+  the streaming ingest path; and the QR-claim welcome (same content, welcome framing —
+  always inside Meta's 24h service window since the customer just messaged). Recorded in
+  `transactional_messages` — never in campaign messages or `direct_messages`, keeping
+  attribution, hold-outs, and the owner's 1:1 history clean. Config
+  `receipts.{enabled,showItems,footerNote}`; stub/live like the other WhatsApp senders
+  (`TODO(whatsapp-live)`: utility templates).
+  *Files:* `packages/channels/src/receipt.ts`, wiring in `apps/api/src/routes/ingest.ts`.
+  *Depends on:* `ingestion`, `loyalty-points`, `coupon-engine`, `db-layer`.
+  *Used by:* `qr-order-capture` (welcome).
 
 ## 6. AI surface (`packages/ai` — the ONLY LLM call sites; all authoring-time or cached)
 
@@ -264,7 +316,8 @@ graph TD
   at seed. Balance-guarded adjust endpoint (`POST /v1/{app/}loyalty/adjust`).
   *Files:* `packages/core/src/loyalty.ts`, ledger repos in `packages/db/src/repos-ai.ts`.
   *Depends on:* `ingestion`, `shared-types` (loyalty config), `db-layer`.
-  *Used by:* `counter-card`, `tenant-onboarding`.
+  *Used by:* `counter-card`, `tenant-onboarding`, `order-receipts` (points earned/balance
+  on the bill).
 
 - **`menu-catalog`** — Catalog with prices + stock toggles; one-tap import from sales history
   (cold-start). Constrains recommendations to sellable items; feeds new-item names to copy.
@@ -277,8 +330,10 @@ graph TD
 
 - **`api-app`** — Express app, deploy-target-neutral: `src/app.ts` never calls `listen()`;
   `src/index.ts` runs persistent (:4000), `api/index.ts` exports the same app for Vercel
-  serverless. Routes: auth/login, ingest, redemptions, webhooks, app (insights, campaigns,
-  attribution, preferences, settings), segments, counter, menu.
+  serverless. Routes: auth/login, ingest, redemptions (campaign codes + coupons), webhooks,
+  app (insights, campaigns, attribution, preferences, settings, settings/engagement),
+  segments, counter, menu, qr-orders, plus the public unauthenticated `GET /q/:token`
+  claim redirect + `/q/:token/qr.svg` (the unguessable token is the credential).
   *Files:* `apps/api/src/app.ts`, `index.ts`, `apps/api/api/index.ts`, `apps/api/src/routes/*`,
   `apps/api/vercel.json`.
   *Depends on:* `auth`, all route-backing nodes.
@@ -303,8 +358,9 @@ graph TD
 - **`dashboard-app`** — Next.js shop-owner app (:3000), tenant-themed. Pages: `/` +
   `/insights` (customer picture + impact ← `attribution`), `/campaigns` (approval queue),
   `/segments` (standard + AI authoring/discovery), `/loyalty` (Counter), `/menu`,
-  `/data` (uploads), `/preferences` (toggles + frequency cap), `/settings` (WhatsApp status,
-  branding, API key).
+  `/data` (uploads + online-order QR desk ← `qr-order-capture`), `/preferences` (toggles +
+  frequency cap + receipt/coupon rules ← `coupon-engine`, `order-receipts`), `/settings`
+  (WhatsApp status, branding, API key).
   *Files:* `apps/dashboard/app/*/page.tsx`, `components/AppShell.tsx`, `lib/api.ts`.
   *Depends on:* `api-app` (via `lib/api.ts`), `auth`.
 

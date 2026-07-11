@@ -17,17 +17,27 @@ import type { CampaignType, Profile, SendMeta, SendResult, Tenant } from "@hpas/
 import {
   addOptOut,
   addWhatsappOptIn,
+  claimQrOrder,
   getApprovedTemplate,
+  getCouponByCode,
   getMessageByRedemptionCode,
+  getQrOrderForTenant,
   getTenantById,
   getWhatsappOptIns,
   insertEvent,
+  redeemCoupon,
   updateMessageStatus,
   upsertProfile,
   upsertWhatsappTemplate,
   query,
 } from "@hpas/db";
-import { normalizePhone } from "@hpas/core";
+import {
+  QR_TOKEN_REGEX,
+  ingestNormalizedEvents,
+  maybeIssueCoupon,
+  normalizePhone,
+} from "@hpas/core";
+import { sendQrWelcome } from "./receipt.js";
 
 const GRAPH_API_BASE = "https://graph.facebook.com/v20.0";
 
@@ -152,13 +162,14 @@ export async function handleWhatsAppStatusWebhook(payload: any): Promise<number>
 export async function handleWhatsAppInboundWebhook(
   tenantId: string,
   payload: any
-): Promise<{ replies: number; optOuts: number; redemptions: number }> {
+): Promise<{ replies: number; optOuts: number; redemptions: number; qrClaims: number }> {
   const tenant = await getTenantById(tenantId);
-  if (!tenant) return { replies: 0, optOuts: 0, redemptions: 0 };
+  if (!tenant) return { replies: 0, optOuts: 0, redemptions: 0, qrClaims: 0 };
 
   let replies = 0;
   let optOuts = 0;
   let redemptions = 0;
+  let qrClaims = 0;
 
   for (const entry of payload?.entry ?? []) {
     for (const change of entry?.changes ?? []) {
@@ -197,6 +208,41 @@ export async function handleWhatsAppInboundWebhook(
         // Replying counts as an explicit opt-in refresh.
         await addWhatsappOptIn(tenantId, phone, "inbound_reply");
 
+        // A QR-order token in the pre-drafted message ("Q-7KX2M9P4QA")
+        // claims that online order: the purchase lands on this phone's
+        // profile (points included, via the shared ingestion path) and a
+        // welcome goes back — the moment an aggregator customer becomes ours.
+        const qrMatch = text.toUpperCase().match(QR_TOKEN_REGEX);
+        if (qrMatch) {
+          const qr = await getQrOrderForTenant(tenantId, qrMatch[0]);
+          if (qr && qr.status === "pending") {
+            await ingestNormalizedEvents(tenant, [
+              {
+                tenantId,
+                phone,
+                traits: {},
+                locationId: undefined,
+                eventType: "purchase",
+                items: qr.items,
+                amount: qr.amount,
+                ts: new Date(qr.createdAt),
+              },
+            ]);
+            if (await claimQrOrder(tenantId, qr.id, profile.id)) {
+              const coupon = await maybeIssueCoupon(
+                tenant,
+                profile.id,
+                phone,
+                qr.amount,
+                "qr_welcome"
+              );
+              await sendQrWelcome(tenant, profile, qr, coupon);
+              qrClaims++;
+            }
+            continue;
+          }
+        }
+
         // A redemption code typed back ("DADU-WB-3F9A2C") records a redemption.
         const codeMatch = text.toUpperCase().match(/\b[A-Z]{2,6}-[A-Z]{2}-[A-Z0-9]{4,8}\b/);
         if (codeMatch) {
@@ -212,12 +258,30 @@ export async function handleWhatsAppInboundWebhook(
               locationId: undefined,
             });
             redemptions++;
+            continue;
+          }
+          // Not a campaign code — maybe a personalized coupon ("DADU-CP-X7K2M9").
+          const coupon = await getCouponByCode(tenantId, codeMatch[0]);
+          if (
+            coupon &&
+            coupon.profileId === profile.id &&
+            new Date(coupon.expiresAt).getTime() > Date.now() &&
+            (await redeemCoupon(tenantId, coupon.id))
+          ) {
+            await insertEvent(tenantId, profile.id, {
+              eventType: "redemption",
+              items: [{ name: coupon.code, category: "coupon", qty: 1, unitPrice: 0 }],
+              amount: 0,
+              ts: new Date(),
+              locationId: undefined,
+            });
+            redemptions++;
           }
         }
       }
     }
   }
-  return { replies, optOuts, redemptions };
+  return { replies, optOuts, redemptions, qrClaims };
 }
 
 function hashish(s: string): string {

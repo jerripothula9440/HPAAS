@@ -13,6 +13,7 @@ import { redemptionsRouter } from "./routes/redemptions.js";
 import { segmentsRouter } from "./routes/segments.js";
 import { counterRouter } from "./routes/counter.js";
 import { menuRouter } from "./routes/menu.js";
+import { qrOrdersRouter, qrPublicRouter } from "./routes/qr-orders.js";
 
 export const app: express.Express = express();
 app.use(cors());
@@ -25,16 +26,23 @@ app.post("/v1/auth/login", loginHandler);
 // WhatsApp webhooks (Meta calls these; verified via token/signature, not API key).
 app.use("/v1/webhooks", webhooksRouter);
 
+// Public QR claim surface (customer phones hit this from the printed QR;
+// the unguessable per-order token is the credential).
+app.use("/q", qrPublicRouter);
+
 // Dashboard (session auth). Includes CSV upload via the shared ingest routes.
 app.use("/v1/app", sessionAuth, appRouter);
 app.use("/v1/app", sessionAuth, ingestRouter);
 app.use("/v1/app", sessionAuth, segmentsRouter);
 app.use("/v1/app", sessionAuth, counterRouter);
 app.use("/v1/app", sessionAuth, menuRouter);
+app.use("/v1/app", sessionAuth, qrOrdersRouter);
 
 // Machine API (API-key auth): streaming events, uploads, POS redemptions,
-// and the counter card (so billing software can show it at checkout and
-// award/redeem points from the till).
+// the counter card (so billing software can show it at checkout and
+// award/redeem points from the till), and per-order QR creation for
+// aggregator-order capture.
 app.use("/v1", apiKeyAuth, ingestRouter);
 app.use("/v1", apiKeyAuth, redemptionsRouter);
 app.use("/v1", apiKeyAuth, counterRouter);
+app.use("/v1", apiKeyAuth, qrOrdersRouter);
