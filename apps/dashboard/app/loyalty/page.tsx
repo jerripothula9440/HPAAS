@@ -56,7 +56,18 @@ const SIGNAL_LABEL: Record<string, string> = {
   festival: "festive",
 };
 
+const COUNTRY_CODES = [
+  { code: "+91", label: "🇮🇳 +91" },
+  { code: "+1", label: "🇺🇸 +1" },
+  { code: "+44", label: "🇬🇧 +44" },
+  { code: "+49", label: "🇩🇪 +49" },
+  { code: "+971", label: "🇦🇪 +971" },
+  { code: "+65", label: "🇸🇬 +65" },
+  { code: "+61", label: "🇦🇺 +61" },
+];
+
 export default function CounterPage() {
+  const [countryCode, setCountryCode] = useState("+91");
   const [phone, setPhone] = useState("");
   const [card, setCard] = useState<CounterCard | null>(null);
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
@@ -85,6 +96,7 @@ export default function CounterPage() {
     .filter((it) => (newItemQty[it.id] ?? 0) > 0)
     .map((it) => ({ name: it.name, category: it.category, qty: newItemQty[it.id], unitPrice: it.price }));
   const newSelectedTotal = newSelectedItems.reduce((sum, it) => sum + it.qty * it.unitPrice, 0);
+  const fullPhone = phone.trim() ? `${countryCode}${phone.trim()}` : "";
 
   async function lookup(refresh = false) {
     if (!phone.trim()) return;
@@ -99,7 +111,7 @@ export default function CounterPage() {
     }
     try {
       const r = await api<{ card: CounterCard; ledger: LedgerEntry[]; recentMessages: DirectMsg[] }>(
-        `/counter?phone=${encodeURIComponent(phone.trim())}${refresh ? "&refresh=1" : ""}`
+        `/counter?phone=${encodeURIComponent(fullPhone)}${refresh ? "&refresh=1" : ""}`
       );
       setCard(r.card);
       setLedger(r.ledger);
@@ -168,7 +180,7 @@ export default function CounterPage() {
     try {
       await api("/counter/new-customer", {
         method: "POST",
-        body: JSON.stringify({ phone: phone.trim(), name: newName.trim(), items: newSelectedItems }),
+        body: JSON.stringify({ phone: fullPhone, name: newName.trim(), items: newSelectedItems }),
       });
       setIsNewCustomer(false);
       setNotice(`Added ${newName.trim()} to your customers.`);
@@ -195,6 +207,13 @@ export default function CounterPage() {
             lookup(false);
           }}
         >
+          <select value={countryCode} onChange={(e) => setCountryCode(e.target.value)} style={{ width: 100 }}>
+            {COUNTRY_CODES.map((c) => (
+              <option key={c.code} value={c.code}>
+                {c.label}
+              </option>
+            ))}
+          </select>
           <input
             type="text"
             value={phone}
@@ -212,7 +231,7 @@ export default function CounterPage() {
 
       {isNewCustomer && (
         <div className="card" style={{ marginBottom: 20 }}>
-          <div className="section-title">New customer — {phone.trim()}</div>
+          <div className="section-title">New customer — {fullPhone}</div>
           <div className="muted" style={{ marginBottom: 14 }}>
             No one's bought from you with this number yet. Add their name (and today's order, if
             they're buying) to create their profile.

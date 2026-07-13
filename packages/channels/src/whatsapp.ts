@@ -181,7 +181,12 @@ export async function handleWhatsAppInboundWebhook(
   for (const entry of payload?.entry ?? []) {
     for (const change of entry?.changes ?? []) {
       for (const msg of change?.value?.messages ?? []) {
-        const phone = normalizePhone(String(msg?.from ?? ""));
+        // Meta's `from` is always a fully-qualified international number
+        // with no leading "+" (e.g. "4917669588496" for a German number,
+        // "919876543210" for Indian) — never guess a default country code
+        // for it the way CSV-import numbers need, or non-Indian numbers get
+        // silently rejected as invalid.
+        const phone = normalizePhone(`+${String(msg?.from ?? "")}`);
         const text: string = msg?.text?.body ?? "";
         if (!phone) continue;
 

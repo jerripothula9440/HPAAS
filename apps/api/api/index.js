@@ -2174,7 +2174,7 @@ async function handleWhatsAppInboundWebhook(tenantId, payload) {
   for (const entry of payload?.entry ?? []) {
     for (const change of entry?.changes ?? []) {
       for (const msg of change?.value?.messages ?? []) {
-        const phone = normalizePhone(String(msg?.from ?? ""));
+        const phone = normalizePhone(`+${String(msg?.from ?? "")}`);
         const text = msg?.text?.body ?? "";
         if (!phone)
           continue;
