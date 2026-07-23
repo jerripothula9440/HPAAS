@@ -22,6 +22,8 @@ const mapMenuItem = (r: any): MenuItem => ({
   description: r.description,
   tags: r.tags ?? [],
   available: r.available,
+  gstRate: r.gst_rate === null || r.gst_rate === undefined ? null : Number(r.gst_rate),
+  hsnCode: r.hsn_code ?? null,
   createdAt: r.created_at,
 });
 
@@ -42,15 +44,18 @@ export async function upsertMenuItem(
     description?: string | null;
     tags?: string[];
     available?: boolean;
+    gstRate?: number | null;
+    hsnCode?: string | null;
   }
 ): Promise<MenuItem> {
   const row = await queryOne(
-    `INSERT INTO menu_items (tenant_id, name, category, price, description, tags, available)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO menu_items (tenant_id, name, category, price, description, tags, available, gst_rate, hsn_code)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT (tenant_id, name) DO UPDATE SET
        category = EXCLUDED.category, price = EXCLUDED.price,
        description = EXCLUDED.description, tags = EXCLUDED.tags,
-       available = EXCLUDED.available
+       available = EXCLUDED.available, gst_rate = EXCLUDED.gst_rate,
+       hsn_code = EXCLUDED.hsn_code
      RETURNING *`,
     [
       tenantId,
@@ -60,6 +65,8 @@ export async function upsertMenuItem(
       item.description ?? null,
       JSON.stringify(item.tags ?? []),
       item.available ?? true,
+      item.gstRate ?? null,
+      item.hsnCode ?? null,
     ]
   );
   return mapMenuItem(row);

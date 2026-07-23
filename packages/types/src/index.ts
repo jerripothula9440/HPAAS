@@ -14,7 +14,8 @@ export type ModuleKey =
   | "menu"
   | "preferences"
   | "data"
-  | "settings";
+  | "settings"
+  | "billing";
 
 export type CampaignType =
   | "winback"
@@ -133,6 +134,27 @@ export interface QrCaptureConfig {
   messageTemplate?: string;
 }
 
+/**
+ * The tenant's own GST/business details, filled in by the shop owner —
+ * everything a GST tax invoice legally needs beyond the line items
+ * themselves. All optional: a tenant with no billing profile yet can't
+ * generate invoices (see billingProfileConfig()'s isComplete flag), but
+ * every other feature is unaffected.
+ */
+export interface BillingProfileConfig {
+  legalName?: string;
+  gstin?: string;
+  pan?: string;
+  addressLines?: string[];
+  state?: string;
+  /** Prefix for generated invoice numbers, e.g. "DADU" → DADU-0001. */
+  invoicePrefix?: string;
+  /** Applied to menu items with no gstRate of their own. */
+  defaultGstRate?: number;
+  /** Applied to menu items with no hsnCode of their own. */
+  defaultHsnCode?: string;
+}
+
 export interface TenantConfig {
   slug: string;
   branding: TenantBranding;
@@ -150,6 +172,8 @@ export interface TenantConfig {
   coupons?: CouponConfig;
   /** Optional — defaults applied in code when absent (see qrCaptureConfig()). */
   qrCapture?: QrCaptureConfig;
+  /** Optional — defaults applied in code when absent (see billingProfileConfig()). */
+  billingProfile?: BillingProfileConfig;
 }
 
 /** Loyalty settings with defaults for tenants configured before the feature existed. */
@@ -170,6 +194,16 @@ export function couponConfig(config: TenantConfig): CouponConfig {
 /** QR capture settings with defaults for tenants configured before the feature existed. */
 export function qrCaptureConfig(config: TenantConfig): QrCaptureConfig {
   return config.qrCapture ?? { enabled: true };
+}
+
+/** Billing profile with defaults for tenants who haven't filled one in yet. */
+export function billingProfileConfig(config: TenantConfig): BillingProfileConfig {
+  return config.billingProfile ?? {};
+}
+
+/** A tenant can't issue a legally-adequate GST invoice without these two. */
+export function billingProfileIsComplete(profile: BillingProfileConfig): boolean {
+  return Boolean(profile.legalName?.trim() && profile.gstin?.trim());
 }
 
 export interface Tenant {
@@ -420,6 +454,41 @@ export interface MenuItem {
   description: string | null;
   tags: string[];
   available: boolean;
+  /** GST slab (%), e.g. 5, 12, 18. Falls back to billingProfile.defaultGstRate on invoices when unset. */
+  gstRate: number | null;
+  /** Falls back to billingProfile.defaultHsnCode on invoices when unset. */
+  hsnCode: string | null;
+  createdAt: Date;
+}
+
+// ---------- GST billing ----------
+
+export interface InvoiceLineItem {
+  name: string;
+  hsnCode: string;
+  qty: number;
+  unitPrice: number;
+  gstRate: number;
+  taxableValue: number;
+  cgst: number;
+  sgst: number;
+  lineTotal: number;
+}
+
+export interface Invoice {
+  id: string;
+  tenantId: string;
+  token: string;
+  invoiceNumber: string;
+  profileId: string | null;
+  customerName: string | null;
+  customerPhone: string | null;
+  lineItems: InvoiceLineItem[];
+  taxableAmount: number;
+  cgstAmount: number;
+  sgstAmount: number;
+  totalAmount: number;
+  status: "issued" | "cancelled";
   createdAt: Date;
 }
 
@@ -486,7 +555,7 @@ export interface QrOrder {
 // Receipts and QR welcomes. Separate from campaign messages AND direct
 // messages so attribution, hold-outs, and the owner's 1:1 history stay clean.
 
-export type TransactionalKind = "receipt" | "qr_welcome";
+export type TransactionalKind = "receipt" | "qr_welcome" | "invoice";
 
 export interface TransactionalMessage {
   id: string;

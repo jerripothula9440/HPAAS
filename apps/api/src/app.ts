@@ -14,6 +14,7 @@ import { segmentsRouter } from "./routes/segments.js";
 import { counterRouter } from "./routes/counter.js";
 import { menuRouter } from "./routes/menu.js";
 import { qrOrdersRouter, qrPublicRouter } from "./routes/qr-orders.js";
+import { billingRouter, invoicesPublicRouter } from "./routes/billing.js";
 
 export const app: express.Express = express();
 app.use(cors());
@@ -41,6 +42,10 @@ app.use("/v1/webhooks", webhooksRouter);
 // the unguessable per-order token is the credential).
 app.use("/q", qrPublicRouter);
 
+// Public printable GST invoice (same unguessable-token-is-the-credential
+// pattern as the QR claim surface above).
+app.use("/i", invoicesPublicRouter);
+
 // Dashboard (session auth). Includes CSV upload via the shared ingest routes.
 app.use("/v1/app", sessionAuth, appRouter);
 app.use("/v1/app", sessionAuth, ingestRouter);
@@ -48,6 +53,7 @@ app.use("/v1/app", sessionAuth, segmentsRouter);
 app.use("/v1/app", sessionAuth, counterRouter);
 app.use("/v1/app", sessionAuth, menuRouter);
 app.use("/v1/app", sessionAuth, qrOrdersRouter);
+app.use("/v1/app", sessionAuth, billingRouter);
 
 // Machine API (API-key auth): streaming events, uploads, POS redemptions,
 // the counter card (so billing software can show it at checkout and

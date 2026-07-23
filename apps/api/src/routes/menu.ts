@@ -19,7 +19,7 @@ menuRouter.get("/menu", async (req, res) => {
 
 menuRouter.post("/menu", async (req, res) => {
   const tenant = req.tenant!;
-  const { name, category, price, description, tags, available } = req.body ?? {};
+  const { name, category, price, description, tags, available, gstRate, hsnCode } = req.body ?? {};
   if (!name || typeof name !== "string" || !name.trim()) {
     res.status(400).json({ error: "name is required" });
     return;
@@ -31,6 +31,8 @@ menuRouter.post("/menu", async (req, res) => {
     description: typeof description === "string" ? description : null,
     tags: Array.isArray(tags) ? tags.map(String) : [],
     available: available !== false,
+    gstRate: gstRate !== null && gstRate !== undefined && gstRate !== "" ? Math.max(0, Math.min(28, Number(gstRate))) : null,
+    hsnCode: typeof hsnCode === "string" && hsnCode.trim() ? hsnCode.trim() : null,
   });
   res.json({ item });
 });

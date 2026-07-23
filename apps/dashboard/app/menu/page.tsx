@@ -14,6 +14,8 @@ interface MenuItem {
   category: string;
   price: number;
   available: boolean;
+  gstRate: number | null;
+  hsnCode: string | null;
 }
 
 export default function MenuPage() {
@@ -25,6 +27,8 @@ export default function MenuPage() {
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
   const [price, setPrice] = useState("");
+  const [gstRate, setGstRate] = useState("");
+  const [hsnCode, setHsnCode] = useState("");
 
   const load = useCallback(() => {
     api<{ items: MenuItem[] }>("/menu")
@@ -41,11 +45,19 @@ export default function MenuPage() {
     try {
       await api("/menu", {
         method: "POST",
-        body: JSON.stringify({ name, category: category || "uncategorized", price: Number(price) || 0 }),
+        body: JSON.stringify({
+          name,
+          category: category || "uncategorized",
+          price: Number(price) || 0,
+          gstRate: gstRate ? Number(gstRate) : null,
+          hsnCode: hsnCode.trim() || null,
+        }),
       });
       setName("");
       setCategory("");
       setPrice("");
+      setGstRate("");
+      setHsnCode("");
       load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -125,6 +137,8 @@ export default function MenuPage() {
           <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Item name" style={{ maxWidth: 220 }} />
           <input type="text" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Category (e.g. sweets)" style={{ maxWidth: 200 }} />
           <input type="number" min={0} value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Price ₹" style={{ maxWidth: 120 }} />
+          <input type="number" min={0} max={28} value={gstRate} onChange={(e) => setGstRate(e.target.value)} placeholder="GST %" style={{ maxWidth: 100 }} />
+          <input type="text" value={hsnCode} onChange={(e) => setHsnCode(e.target.value)} placeholder="HSN code" style={{ maxWidth: 120 }} />
           <button className="btn btn-primary" disabled={busy === "add" || !name.trim()} type="submit">
             Add
           </button>
@@ -152,6 +166,7 @@ export default function MenuPage() {
                 <tr>
                   <th>Item</th>
                   <th className="num">Price</th>
+                  <th>GST</th>
                   <th>In stock</th>
                   <th></th>
                 </tr>
@@ -161,6 +176,10 @@ export default function MenuPage() {
                   <tr key={item.id} style={{ opacity: item.available ? 1 : 0.5 }}>
                     <td>{item.name}</td>
                     <td className="num">₹{item.price}</td>
+                    <td className="muted">
+                      {item.gstRate !== null ? `${item.gstRate}%` : "—"}
+                      {item.hsnCode ? ` · ${item.hsnCode}` : ""}
+                    </td>
                     <td>
                       <label className="toggle">
                         <input type="checkbox" checked={item.available} disabled={busy === item.id} onChange={() => toggle(item)} />

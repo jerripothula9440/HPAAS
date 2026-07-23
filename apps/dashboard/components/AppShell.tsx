@@ -19,6 +19,7 @@ const MODULE_META: Record<ModuleKey, { label: string; path: string }> = {
   preferences: { label: "Preferences", path: "/preferences" },
   data: { label: "Upload Data", path: "/data" },
   settings: { label: "Settings", path: "/settings" },
+  billing: { label: "Billing", path: "/billing" },
 };
 
 export default function AppShell({ children }: { children: ReactNode }) {
