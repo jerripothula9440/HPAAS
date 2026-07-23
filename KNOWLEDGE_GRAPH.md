@@ -56,6 +56,9 @@ graph TD
         AIAUTHOR[ai-segment-authoring] --> SEGMENTS
         AIDISCOVER[ai-segment-discovery] --> SEGMENTS
         COUNTERAPI --> DIRECT[direct-messages 1:1]
+        MENU --> GST[gst-billing - tax invoice]
+        GST --> WA
+        GST --> EMAIL
     end
 ```
 
@@ -343,10 +346,44 @@ graph TD
 
 - **`menu-catalog`** — Catalog with prices + stock toggles; one-tap import from sales history
   (cold-start). Constrains recommendations to sellable items; feeds new-item names to copy.
+  Each item optionally carries `hsnCode`/`gstRate` (nullable — falls back to the tenant's
+  `billingProfile.defaultHsnCode`/`defaultGstRate` at invoice time, see `gst-billing`).
   *Files:* `packages/core/src/menu.ts`, `apps/api/src/routes/menu.ts`,
   `apps/dashboard/app/menu/page.tsx`, repos in `packages/db/src/repos-ai.ts`.
   *Depends on:* `db-layer`. *Used by:* `counter-recommendations`, `ai-campaign-copy`,
-  `tenant-onboarding`, `qr-order-capture` (dashboard item picker for QR orders).
+  `tenant-onboarding`, `qr-order-capture` (dashboard item picker for QR orders),
+  `gst-billing` (per-item tax rate/HSN).
+
+- **`gst-billing`** — Tenant-invoked GST tax invoice generation. The tenant fills in their own
+  business/GST details once (`Settings → Billing`, `GET/PUT /v1/app/settings/billing`, stored
+  as `tenants.config->billingProfile` — mirrors the `settings/engagement` pattern exactly:
+  `patchTenantConfig` shallow-merge, `billingProfileConfig()` default accessor). From the
+  `/billing` page, picking items + a phone number and hitting Generate (`POST
+  /v1/app/invoices`) looks up/creates the customer profile, resolves each line's GST
+  rate/HSN (menu item → tenant default → 0) via `computeInvoiceLines`
+  (`packages/core/src/gst.ts`), and atomically claims the next sequential per-tenant invoice
+  number (`invoice_counters` table, one UPDATE...RETURNING, no racy `COUNT(*)+1`). The
+  invoice snapshots its line items/tax breakup at creation time — later menu-price or
+  GST-rate edits never change a past invoice. Delivered three ways: a public printable HTML
+  page at `GET /i/:token` (same unguessable-token-is-the-credential pattern as the QR claim
+  page, mounted in `app.ts` right alongside `/q`), a WhatsApp message via
+  `sendTransactionalWhatsApp` (kind `"invoice"`) with a link, and — when the profile has an
+  email trait — `sendInvoiceEmail` (a generic Resend send, distinct from the
+  campaign-fallback-only `sendViaEmail`).
+  **Deliberate scope limits** (see the migration's header comment for the full list):
+  intra-state supply only (CGST+SGST split, no IGST/place-of-supply — this product has no
+  notion of a customer's billing state, being a physical-counter/QR-pickup flow, not shipped
+  e-commerce); no GSTN e-invoice IRN/GSP integration (this generates a valid-looking invoice
+  document, not a government-registered e-invoice); continuous invoice numbering, no
+  financial-year reset.
+  *Files:* `packages/core/src/gst.ts`, `packages/db/src/repos-billing.ts`,
+  `apps/api/src/routes/billing.ts`, `apps/dashboard/app/settings/billing/page.tsx`,
+  `apps/dashboard/app/billing/page.tsx`, migration `005_gst_billing.sql`.
+  *Depends on:* `menu-catalog` (tax rate/HSN per item), `phone-normalization`,
+  `whatsapp-adapter`, `email-adapter`, `db-layer`.
+  *Not wired in yet (deliberately out of v1 scope):* auto-generating an invoice from the
+  Counter's `/counter/new-customer` flow or the QR-claim flow — this is a standalone,
+  tenant-invoked action for now, matching "filled by tenant himself."
 
 ## 8. Apps & operations
 

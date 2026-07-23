@@ -17,7 +17,8 @@
     "menu": { "enabled": true, "order": 5 },
     "preferences": { "enabled": true, "order": 6 },
     "data": { "enabled": true, "order": 7 },
-    "settings": { "enabled": true, "order": 8 }
+    "settings": { "enabled": true, "order": 8 },
+    "billing": { "enabled": true, "order": 9 }
   },
   "loyalty": {
     "enabled": true,

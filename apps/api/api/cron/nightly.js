@@ -6850,6 +6850,8 @@ var mapMenuItem = (r) => ({
   description: r.description,
   tags: r.tags ?? [],
   available: r.available,
+  gstRate: r.gst_rate === null || r.gst_rate === void 0 ? null : Number(r.gst_rate),
+  hsnCode: r.hsn_code ?? null,
   createdAt: r.created_at
 });
 async function recentMenuItems(tenantId, days) {

@@ -881,6 +881,8 @@ var mapMenuItem = (r) => ({
   description: r.description,
   tags: r.tags ?? [],
   available: r.available,
+  gstRate: r.gst_rate === null || r.gst_rate === void 0 ? null : Number(r.gst_rate),
+  hsnCode: r.hsn_code ?? null,
   createdAt: r.created_at
 });
 async function listMenuItems(tenantId) {
@@ -888,12 +890,13 @@ async function listMenuItems(tenantId) {
   return rows.map(mapMenuItem);
 }
 async function upsertMenuItem(tenantId, item) {
-  const row = await queryOne(`INSERT INTO menu_items (tenant_id, name, category, price, description, tags, available)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+  const row = await queryOne(`INSERT INTO menu_items (tenant_id, name, category, price, description, tags, available, gst_rate, hsn_code)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT (tenant_id, name) DO UPDATE SET
        category = EXCLUDED.category, price = EXCLUDED.price,
        description = EXCLUDED.description, tags = EXCLUDED.tags,
-       available = EXCLUDED.available
+       available = EXCLUDED.available, gst_rate = EXCLUDED.gst_rate,
+       hsn_code = EXCLUDED.hsn_code
      RETURNING *`, [
     tenantId,
     item.name,
@@ -901,7 +904,9 @@ async function upsertMenuItem(tenantId, item) {
     item.price,
     item.description ?? null,
     JSON.stringify(item.tags ?? []),
-    item.available ?? true
+    item.available ?? true,
+    item.gstRate ?? null,
+    item.hsnCode ?? null
   ]);
   return mapMenuItem(row);
 }
@@ -1154,6 +1159,63 @@ async function patchTenantConfig(tenantId, patch) {
   ]);
 }
 
+// ../../packages/db/dist/repos-billing.js
+var mapInvoice = (r) => ({
+  id: r.id,
+  tenantId: r.tenant_id,
+  token: r.token,
+  invoiceNumber: r.invoice_number,
+  profileId: r.profile_id,
+  customerName: r.customer_name,
+  customerPhone: r.customer_phone,
+  lineItems: r.line_items ?? [],
+  taxableAmount: Number(r.taxable_amount),
+  cgstAmount: Number(r.cgst_amount),
+  sgstAmount: Number(r.sgst_amount),
+  totalAmount: Number(r.total_amount),
+  status: r.status,
+  createdAt: r.created_at
+});
+async function createInvoice(i) {
+  const taxableAmount = i.lineItems.reduce((sum, l) => sum + l.taxableValue, 0);
+  const cgstAmount = i.lineItems.reduce((sum, l) => sum + l.cgst, 0);
+  const sgstAmount = i.lineItems.reduce((sum, l) => sum + l.sgst, 0);
+  const totalAmount = i.lineItems.reduce((sum, l) => sum + l.lineTotal, 0);
+  return withTransaction(async (client) => {
+    const counter = await client.query(`INSERT INTO invoice_counters (tenant_id) VALUES ($1)
+       ON CONFLICT (tenant_id) DO UPDATE SET next_number = invoice_counters.next_number + 1
+       RETURNING next_number`, [i.tenantId]);
+    const seq = counter.rows[0].next_number;
+    const invoiceNumber = `${i.invoicePrefix}-${String(seq).padStart(4, "0")}`;
+    const row = await client.query(`INSERT INTO invoices
+         (tenant_id, token, invoice_number, profile_id, customer_name, customer_phone,
+          line_items, taxable_amount, cgst_amount, sgst_amount, total_amount)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING *`, [
+      i.tenantId,
+      i.token,
+      invoiceNumber,
+      i.profileId ?? null,
+      i.customerName ?? null,
+      i.customerPhone ?? null,
+      JSON.stringify(i.lineItems),
+      taxableAmount,
+      cgstAmount,
+      sgstAmount,
+      totalAmount
+    ]);
+    return mapInvoice(row.rows[0]);
+  });
+}
+async function getInvoiceByToken(token) {
+  const row = await queryOne(`SELECT * FROM invoices WHERE token = $1`, [token]);
+  return row ? mapInvoice(row) : null;
+}
+async function listInvoices(tenantId, limit = 50) {
+  const rows = await query(`SELECT * FROM invoices WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT $2`, [tenantId, limit]);
+  return rows.map(mapInvoice);
+}
+
 // ../../packages/db/dist/migrate.js
 import fs from "node:fs";
 import path2 from "node:path";
@@ -1375,6 +1437,12 @@ function couponConfig(config) {
 }
 function qrCaptureConfig(config) {
   return config.qrCapture ?? { enabled: true };
+}
+function billingProfileConfig(config) {
+  return config.billingProfile ?? {};
+}
+function billingProfileIsComplete(profile) {
+  return Boolean(profile.legalName?.trim() && profile.gstin?.trim());
 }
 
 // ../../packages/core/dist/loyalty.js
@@ -1963,6 +2031,41 @@ async function importMenuFromHistory(tenantId) {
   return { imported, skipped: candidates.length - imported };
 }
 
+// ../../packages/core/dist/gst.js
+import crypto4 from "node:crypto";
+function generateInvoiceToken() {
+  const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  let token = "";
+  for (const byte of crypto4.randomBytes(10))
+    token += alphabet[byte % alphabet.length];
+  return `I-${token}`;
+}
+function computeInvoiceLines(items, tenant, menuByName) {
+  const billing = billingProfileConfig(tenant.config);
+  return items.map((item) => {
+    const menuItem = menuByName.get(item.name.toLowerCase());
+    const gstRate = menuItem?.gstRate ?? billing.defaultGstRate ?? 0;
+    const hsnCode = menuItem?.hsnCode ?? billing.defaultHsnCode ?? "";
+    const taxableValue = item.qty * item.unitPrice;
+    const cgst = taxableValue * gstRate / 200;
+    const sgst = cgst;
+    return {
+      name: item.name,
+      hsnCode,
+      qty: item.qty,
+      unitPrice: item.unitPrice,
+      gstRate,
+      taxableValue,
+      cgst,
+      sgst,
+      lineTotal: taxableValue + cgst + sgst
+    };
+  });
+}
+function menuItemsByName(items) {
+  return new Map(items.map((it) => [it.name.toLowerCase(), it]));
+}
+
 // ../../packages/channels/dist/receipt.js
 var GRAPH_API_BASE = "https://graph.facebook.com/v20.0";
 async function sendTransactionalWhatsApp(tenant, profile, kind, body) {
@@ -2293,6 +2396,28 @@ async function sendViaEmail(tenant, profile, renderedText, meta) {
   if (!res.ok || !body.id)
     return { ok: false, error: body.message ?? `resend ${res.status}` };
   return { ok: true, providerMessageId: body.id };
+}
+async function sendInvoiceEmail(tenant, profile, invoice, printUrl) {
+  const email = typeof profile.traits.email === "string" ? profile.traits.email : null;
+  if (!email || !tenant.config.channels.email.enabled)
+    return { status: "failed" };
+  if (process.env.EMAIL_MODE !== "resend")
+    return { status: "sent" };
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      from: tenant.config.channels.email.fromAddress,
+      to: email,
+      subject: `Invoice ${invoice.invoiceNumber} from ${tenant.config.branding.shopName}`,
+      text: `Thank you for your purchase! Your invoice ${invoice.invoiceNumber} (\u20B9${invoice.totalAmount.toFixed(2)}) is ready:
+${printUrl}`
+    })
+  });
+  return { status: res.ok ? "sent" : "failed" };
 }
 
 // ../../packages/channels/dist/call-list.js
@@ -2846,13 +2971,13 @@ function __classPrivateFieldGet(receiver, state, kind, f) {
 
 // ../../node_modules/.pnpm/@anthropic-ai+sdk@0.90.0/node_modules/@anthropic-ai/sdk/internal/utils/uuid.mjs
 var uuid4 = function() {
-  const { crypto: crypto4 } = globalThis;
-  if (crypto4?.randomUUID) {
-    uuid4 = crypto4.randomUUID.bind(crypto4);
-    return crypto4.randomUUID();
+  const { crypto: crypto5 } = globalThis;
+  if (crypto5?.randomUUID) {
+    uuid4 = crypto5.randomUUID.bind(crypto5);
+    return crypto5.randomUUID();
   }
   const u8 = new Uint8Array(1);
-  const randomByte = crypto4 ? () => crypto4.getRandomValues(u8)[0] : () => Math.random() * 255 & 255;
+  const randomByte = crypto5 ? () => crypto5.getRandomValues(u8)[0] : () => Math.random() * 255 & 255;
   return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (+c ^ randomByte() & 15 >> +c / 4).toString(16));
 };
 
@@ -9367,7 +9492,7 @@ menuRouter.get("/menu", async (req, res) => {
 });
 menuRouter.post("/menu", async (req, res) => {
   const tenant = req.tenant;
-  const { name, category, price, description, tags, available } = req.body ?? {};
+  const { name, category, price, description, tags, available, gstRate, hsnCode } = req.body ?? {};
   if (!name || typeof name !== "string" || !name.trim()) {
     res.status(400).json({ error: "name is required" });
     return;
@@ -9378,7 +9503,9 @@ menuRouter.post("/menu", async (req, res) => {
     price: Math.max(0, Number(price) || 0),
     description: typeof description === "string" ? description : null,
     tags: Array.isArray(tags) ? tags.map(String) : [],
-    available: available !== false
+    available: available !== false,
+    gstRate: gstRate !== null && gstRate !== void 0 && gstRate !== "" ? Math.max(0, Math.min(28, Number(gstRate))) : null,
+    hsnCode: typeof hsnCode === "string" && hsnCode.trim() ? hsnCode.trim() : null
   });
   res.json({ item });
 });
@@ -9505,6 +9632,173 @@ qrPublicRouter.get("/:token/qr.svg", async (req, res) => {
   res.type("image/svg+xml").send(svg);
 });
 
+// src/routes/billing.ts
+import { Router as Router9 } from "express";
+var billingRouter = Router9();
+function publicBaseUrl2(req) {
+  return process.env.PUBLIC_API_URL ?? `${req.protocol}://${req.get("host")}`;
+}
+function invoiceView(req, invoice) {
+  return { ...invoice, printUrl: `${publicBaseUrl2(req)}/i/${invoice.token}` };
+}
+billingRouter.get("/settings/billing", (req, res) => {
+  res.json({ billingProfile: billingProfileConfig(req.tenant.config) });
+});
+billingRouter.put("/settings/billing", async (req, res) => {
+  const tenant = req.tenant;
+  const body = req.body?.billingProfile ?? {};
+  const gstin = String(body.gstin ?? "").trim().toUpperCase();
+  if (gstin && !/^[0-9A-Z]{15}$/.test(gstin)) {
+    res.status(400).json({ error: "GSTIN must be 15 alphanumeric characters" });
+    return;
+  }
+  const patch = {
+    billingProfile: {
+      ...body.legalName ? { legalName: String(body.legalName).trim().slice(0, 200) } : {},
+      ...gstin ? { gstin } : {},
+      ...body.pan ? { pan: String(body.pan).trim().toUpperCase().slice(0, 10) } : {},
+      ...Array.isArray(body.addressLines) ? { addressLines: body.addressLines.map((l) => String(l).slice(0, 200)).slice(0, 5) } : {},
+      ...body.state ? { state: String(body.state).trim().slice(0, 100) } : {},
+      ...body.invoicePrefix ? { invoicePrefix: String(body.invoicePrefix).replace(/[^a-zA-Z0-9]/g, "").toUpperCase().slice(0, 10) } : {},
+      ...body.defaultGstRate !== void 0 ? { defaultGstRate: Math.max(0, Math.min(28, Number(body.defaultGstRate) || 0)) } : {},
+      ...body.defaultHsnCode ? { defaultHsnCode: String(body.defaultHsnCode).trim().slice(0, 20) } : {}
+    }
+  };
+  await patchTenantConfig(tenant.id, patch);
+  res.json({ ok: true });
+});
+billingRouter.post("/invoices", async (req, res) => {
+  const tenant = req.tenant;
+  const billing = billingProfileConfig(tenant.config);
+  if (!billingProfileIsComplete(billing)) {
+    res.status(409).json({
+      error: "Add your business name and GSTIN under Settings \u2192 Billing before generating invoices"
+    });
+    return;
+  }
+  const phone = normalizePhone(String(req.body?.phone ?? ""));
+  const name = String(req.body?.name ?? "").trim();
+  if (!phone) {
+    res.status(400).json({ error: "valid phone is required" });
+    return;
+  }
+  const items = Array.isArray(req.body?.items) ? req.body.items.map((it) => ({
+    name: String(it.name ?? ""),
+    category: String(it.category ?? "uncategorized"),
+    qty: Number(it.qty) || 1,
+    unitPrice: Number(it.unitPrice) || 0
+  })) : [];
+  if (items.length === 0) {
+    res.status(400).json({ error: "at least one item is required" });
+    return;
+  }
+  const profile = await upsertProfile(tenant.id, phone, name ? { name } : {});
+  const menuItems = await listMenuItems(tenant.id);
+  const lineItems = computeInvoiceLines(items, tenant, menuItemsByName(menuItems));
+  const invoice = await createInvoice({
+    tenantId: tenant.id,
+    token: generateInvoiceToken(),
+    invoicePrefix: billing.invoicePrefix || tenant.config.slug.toUpperCase(),
+    profileId: profile.id,
+    customerName: name || profile.traits.name || null,
+    customerPhone: phone,
+    lineItems
+  });
+  const view = invoiceView(req, invoice);
+  const delivery = { whatsapp: "skipped", email: "skipped" };
+  const waResult = await sendTransactionalWhatsApp(
+    tenant,
+    profile,
+    "invoice",
+    `\u{1F9FE} Invoice ${invoice.invoiceNumber} from *${tenant.config.branding.shopName}* \u2014 \u20B9${Math.round(invoice.totalAmount)}
+${view.printUrl}`
+  );
+  delivery.whatsapp = waResult.status;
+  if (typeof profile.traits.email === "string") {
+    const emailResult = await sendInvoiceEmail(tenant, profile, invoice, view.printUrl);
+    delivery.email = emailResult.status;
+  }
+  res.json({ invoice: view, delivery });
+});
+billingRouter.get("/invoices", async (req, res) => {
+  const invoices = await listInvoices(req.tenant.id, 50);
+  res.json({ invoices: invoices.map((inv) => invoiceView(req, inv)) });
+});
+var invoicesPublicRouter = Router9();
+function escapeHtml2(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+function invoiceHtml(tenant, invoice, printUrl) {
+  const billing = billingProfileConfig(tenant.config);
+  const shop = escapeHtml2(tenant.config.branding.shopName);
+  const legalName = escapeHtml2(billing.legalName ?? shop);
+  const address = (billing.addressLines ?? []).map(escapeHtml2).join(", ");
+  const rows = invoice.lineItems.map(
+    (l) => `<tr>
+        <td>${escapeHtml2(l.name)}</td>
+        <td>${escapeHtml2(l.hsnCode)}</td>
+        <td class="num">${l.qty}</td>
+        <td class="num">\u20B9${l.unitPrice.toFixed(2)}</td>
+        <td class="num">${l.gstRate}%</td>
+        <td class="num">\u20B9${l.taxableValue.toFixed(2)}</td>
+        <td class="num">\u20B9${(l.cgst + l.sgst).toFixed(2)}</td>
+        <td class="num">\u20B9${l.lineTotal.toFixed(2)}</td>
+      </tr>`
+  ).join("");
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invoice ${escapeHtml2(invoice.invoiceNumber)} \u2014 ${shop}</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:720px;margin:30px auto;padding:0 20px;color:#2a2420}
+h1{font-size:1.3rem;margin-bottom:0}
+.muted{color:#8a8178;font-size:0.9rem}
+table{width:100%;border-collapse:collapse;margin-top:20px;font-size:0.9rem}
+th,td{padding:8px;border-bottom:1px solid #eee}
+th{text-align:left;background:#faf7f2}
+.num{text-align:right}
+.totals{margin-top:14px;text-align:right}
+.totals div{margin:4px 0}
+.grand{font-size:1.2rem;font-weight:700}
+@media print{button{display:none}}
+</style></head><body>
+<h1>${legalName}</h1>
+<div class="muted">${address}${billing.state ? ` \u2014 ${escapeHtml2(billing.state)}` : ""}</div>
+<div class="muted">${billing.gstin ? `GSTIN: ${escapeHtml2(billing.gstin)}` : ""}${billing.pan ? ` \u2014 PAN: ${escapeHtml2(billing.pan)}` : ""}</div>
+<hr>
+<div style="display:flex;justify-content:space-between;margin-top:14px">
+  <div>
+    <div><strong>Invoice ${escapeHtml2(invoice.invoiceNumber)}</strong></div>
+    <div class="muted">${new Date(invoice.createdAt).toLocaleDateString("en-IN")}</div>
+  </div>
+  <div style="text-align:right">
+    <div class="muted">Bill to</div>
+    <div>${escapeHtml2(invoice.customerName ?? "Customer")}</div>
+    <div class="muted">${escapeHtml2(invoice.customerPhone ?? "")}</div>
+  </div>
+</div>
+<table>
+  <thead><tr><th>Item</th><th>HSN</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">GST</th><th class="num">Taxable</th><th class="num">Tax</th><th class="num">Total</th></tr></thead>
+  <tbody>${rows}</tbody>
+</table>
+<div class="totals">
+  <div>Taxable amount: \u20B9${invoice.taxableAmount.toFixed(2)}</div>
+  <div>CGST: \u20B9${invoice.cgstAmount.toFixed(2)} &nbsp; SGST: \u20B9${invoice.sgstAmount.toFixed(2)}</div>
+  <div class="grand">Total: \u20B9${invoice.totalAmount.toFixed(2)}</div>
+</div>
+<p class="muted" style="margin-top:30px;font-size:0.8rem">This is a GST tax invoice generated for intra-state supply. ${printUrl}</p>
+<button onclick="window.print()" style="padding:10px 16px;border-radius:8px;border:none;background:#2a2420;color:#fff;cursor:pointer">Print</button>
+</body></html>`;
+}
+invoicesPublicRouter.get("/:token", async (req, res) => {
+  const invoice = await getInvoiceByToken(String(req.params.token).toUpperCase());
+  const tenant = invoice && await getTenantById(invoice.tenantId);
+  if (!invoice || !tenant) {
+    res.status(404).send("This invoice link is not valid.");
+    return;
+  }
+  res.type("html").send(invoiceHtml(tenant, invoice, `${publicBaseUrl2(req)}/i/${invoice.token}`));
+});
+
 // src/app.ts
 var app = express();
 app.use(cors());
@@ -9522,12 +9816,14 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.post("/v1/auth/login", loginHandler);
 app.use("/v1/webhooks", webhooksRouter);
 app.use("/q", qrPublicRouter);
+app.use("/i", invoicesPublicRouter);
 app.use("/v1/app", sessionAuth, appRouter);
 app.use("/v1/app", sessionAuth, ingestRouter);
 app.use("/v1/app", sessionAuth, segmentsRouter);
 app.use("/v1/app", sessionAuth, counterRouter);
 app.use("/v1/app", sessionAuth, menuRouter);
 app.use("/v1/app", sessionAuth, qrOrdersRouter);
+app.use("/v1/app", sessionAuth, billingRouter);
 app.use("/v1", apiKeyAuth, ingestRouter);
 app.use("/v1", apiKeyAuth, redemptionsRouter);
 app.use("/v1", apiKeyAuth, counterRouter);
