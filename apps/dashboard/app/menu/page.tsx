@@ -7,8 +7,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import AppShell from "../../components/AppShell";
-import { api, downloadFile } from "../../lib/api";
+import { api, downloadFile, getSession } from "../../lib/api";
 import { useBusinessUnits } from "../../lib/businessUnits";
+
+interface Recommendation {
+  menuItemId: string;
+  suggestedPrice: number;
+  demandTrend: "rising" | "falling" | "flat";
+}
 
 interface MenuItem {
   id: string;
@@ -51,13 +57,23 @@ export default function MenuPage() {
     businessUnitIds: Set<string>;
   } | null>(null);
 
+  const pricingEnabled = Boolean(getSession()?.tenant.config.modules.pricing?.enabled);
+  const [recommendations, setRecommendations] = useState<Record<string, Recommendation>>({});
+
   const load = useCallback(() => {
     const params = new URLSearchParams();
     if (filterBusinessUnitId) params.set("businessUnitId", filterBusinessUnitId);
     api<{ items: MenuItem[] }>(`/menu${params.toString() ? `?${params.toString()}` : ""}`)
       .then((r) => setItems(r.items))
       .catch((e) => setError(String(e.message ?? e)));
-  }, [filterBusinessUnitId]);
+
+    if (pricingEnabled) {
+      api<{ recommendations: Recommendation[] }>(`/pricing/recommendations${params.toString() ? `?${params.toString()}` : ""}`)
+        .then((r) => setRecommendations(Object.fromEntries(r.recommendations.map((rec) => [rec.menuItemId, rec]))))
+        .catch(() => setRecommendations({}));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterBusinessUnitId, pricingEnabled]);
   useEffect(load, [load]);
 
   function toggleSet(set: Set<string>, id: string): Set<string> {
@@ -387,6 +403,16 @@ export default function MenuPage() {
                           <input type="text" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={{ maxWidth: 200 }} />
                           <input type="text" value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })} style={{ maxWidth: 160 }} />
                           <input type="number" min={0} value={editForm.price} onChange={(e) => setEditForm({ ...editForm, price: e.target.value })} placeholder="Price ₹" style={{ maxWidth: 100 }} />
+                          {recommendations[item.id] && (
+                            <button
+                              type="button"
+                              className="btn btn-ghost"
+                              style={{ padding: "4px 10px", fontSize: "0.8rem" }}
+                              onClick={() => setEditForm({ ...editForm, price: String(recommendations[item.id].suggestedPrice) })}
+                            >
+                              AI suggests ₹{recommendations[item.id].suggestedPrice} ({recommendations[item.id].demandTrend}) — Use this price
+                            </button>
+                          )}
                           <input type="number" min={0} max={28} value={editForm.gstRate} onChange={(e) => setEditForm({ ...editForm, gstRate: e.target.value })} placeholder="GST %" style={{ maxWidth: 90 }} />
                           <input type="text" value={editForm.hsnCode} onChange={(e) => setEditForm({ ...editForm, hsnCode: e.target.value })} placeholder="HSN" style={{ maxWidth: 110 }} />
                           {businessUnits.map((u) => (

@@ -1,9 +1,10 @@
-// Vercel Cron target: feature recompute + trigger evaluation, in sequence,
-// once nightly. Combined into one endpoint so the schedule fits within
-// Vercel Hobby's 2-cron-job limit — see DEPLOYMENT.md for the Pro-plan
-// alternative that splits these into separate, more frequent schedules.
+// Vercel Cron target: feature recompute + trigger evaluation + due pricing
+// pipelines, in sequence, once nightly. Combined into one endpoint so the
+// schedule fits within Vercel Hobby's 2-cron-job limit — see DEPLOYMENT.md
+// for the Pro-plan alternative that splits these into separate, more
+// frequent schedules.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { computeFeaturesJob, evaluateTriggersJob } from "@hpas/jobs";
+import { computeFeaturesJob, evaluateTriggersJob, runDuePricingPipelines } from "@hpas/jobs";
 import { isAuthorizedCronRequest, rejectUnauthorized } from "./_auth.js";
 
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -12,6 +13,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   try {
     await computeFeaturesJob();
     await evaluateTriggersJob();
+    await runDuePricingPipelines();
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ ok: true }));

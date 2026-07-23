@@ -7,24 +7,31 @@
 // automatic. See KNOWLEDGE_GRAPH.md for the deliberate scope limits.
 
 import { Router } from "express";
-import { refreshPricingRecommendations } from "@hpas/jobs";
+import { applyPriceRecommendations, refreshPricingRecommendations, runPricingPipelineNow } from "@hpas/jobs";
 import {
+  createPricingPipeline,
+  deletePricingPipeline,
   getPriceRecommendation,
   listMenuItems,
   listPriceRecommendations,
+  listPricingPipelines,
   patchTenantConfig,
-  updateMenuItemPrice,
-  upsertMenuItemBranchPrice,
+  updatePricingPipeline,
 } from "@hpas/db";
 import {
   pricingConfig,
   pricingDashboardConfig,
   type PricingConfig,
   type PricingItemConfig,
+  type PricingPipelineMode,
+  type PricingPipelineScheduleType,
   type PricingRoundingRule,
   type PricingWidget,
   type PricingWidgetType,
 } from "@hpas/types";
+
+const PIPELINE_MODES: PricingPipelineMode[] = ["manual", "automatic"];
+const PIPELINE_SCHEDULE_TYPES: PricingPipelineScheduleType[] = ["daily", "weekly", "every_n_days", "on_date"];
 
 const ROUNDING_RULES: PricingRoundingRule[] = ["none", "nearest_5", "nearest_10", "end_99", "end_95"];
 const PRICING_WIDGET_TYPES: PricingWidgetType[] = [
@@ -166,11 +173,7 @@ pricingRouter.post("/pricing/apply", async (req, res) => {
       res.status(409).json({ error: "This recommendation needs review before applying" });
       return;
     }
-    if (businessUnitId) {
-      await upsertMenuItemBranchPrice(tenant.id, recommendation.menuItemId, businessUnitId, recommendation.suggestedPrice);
-    } else {
-      await updateMenuItemPrice(tenant.id, recommendation.menuItemId, recommendation.suggestedPrice);
-    }
+    await applyPriceRecommendations(tenant.id, [recommendation], businessUnitId);
     res.json({ applied: 1, skippedNeedsReview: 0 });
     return;
   }
@@ -180,12 +183,88 @@ pricingRouter.post("/pricing/apply", async (req, res) => {
   // already enforced for campaigns and discounts.
   const all = await listPriceRecommendations(tenant.id, businessUnitId);
   const applicable = all.filter((r) => !r.needsReview);
-  for (const r of applicable) {
-    if (businessUnitId) {
-      await upsertMenuItemBranchPrice(tenant.id, r.menuItemId, businessUnitId, r.suggestedPrice);
-    } else {
-      await updateMenuItemPrice(tenant.id, r.menuItemId, r.suggestedPrice);
-    }
-  }
+  await applyPriceRecommendations(tenant.id, applicable, businessUnitId);
   res.json({ applied: applicable.length, skippedNeedsReview: all.length - applicable.length });
+});
+
+// ---------- pricing pipelines ----------
+// Scheduled, scoped refresh (+ optional auto-apply) — see
+// packages/jobs/src/pricing-pipelines.ts for the nightly sweep that runs these.
+
+pricingRouter.get("/pricing/pipelines", async (req, res) => {
+  res.json({ pipelines: await listPricingPipelines(req.tenant!.id) });
+});
+
+pricingRouter.post("/pricing/pipelines", async (req, res) => {
+  const tenant = req.tenant!;
+  const body = req.body ?? {};
+  const name = String(body.name ?? "").trim();
+  if (!name) {
+    res.status(400).json({ error: "name is required" });
+    return;
+  }
+  if (!PIPELINE_MODES.includes(body.mode)) {
+    res.status(400).json({ error: `mode must be one of ${PIPELINE_MODES.join(", ")}` });
+    return;
+  }
+  if (!PIPELINE_SCHEDULE_TYPES.includes(body.scheduleType)) {
+    res.status(400).json({ error: `scheduleType must be one of ${PIPELINE_SCHEDULE_TYPES.join(", ")}` });
+    return;
+  }
+  const config = pricingConfig(tenant.config);
+  const businessUnitId = config.useBusinessUnitsInPricing && typeof body.businessUnitId === "string" ? body.businessUnitId : "";
+
+  const pipeline = await createPricingPipeline(tenant.id, {
+    name: name.slice(0, 80),
+    mode: body.mode,
+    scheduleType: body.scheduleType,
+    scheduleIntervalDays:
+      body.scheduleType === "every_n_days" ? Math.max(1, Math.min(365, Number(body.scheduleIntervalDays) || 1)) : null,
+    scheduleDate: body.scheduleType === "on_date" && body.scheduleDate ? String(body.scheduleDate).slice(0, 10) : null,
+    businessUnitId,
+    itemIds: Array.isArray(body.itemIds) ? body.itemIds.map(String) : [],
+  });
+  res.json({ pipeline });
+});
+
+pricingRouter.put("/pricing/pipelines/:id", async (req, res) => {
+  const tenant = req.tenant!;
+  const body = req.body ?? {};
+  const config = pricingConfig(tenant.config);
+
+  const patch: Parameters<typeof updatePricingPipeline>[2] = {};
+  if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim().slice(0, 80);
+  if (PIPELINE_MODES.includes(body.mode)) patch.mode = body.mode;
+  if (PIPELINE_SCHEDULE_TYPES.includes(body.scheduleType)) patch.scheduleType = body.scheduleType;
+  if ("scheduleIntervalDays" in body) {
+    patch.scheduleIntervalDays = body.scheduleIntervalDays ? Math.max(1, Math.min(365, Number(body.scheduleIntervalDays))) : null;
+  }
+  if ("scheduleDate" in body) {
+    patch.scheduleDate = body.scheduleDate ? String(body.scheduleDate).slice(0, 10) : null;
+  }
+  if (config.useBusinessUnitsInPricing && typeof body.businessUnitId === "string") patch.businessUnitId = body.businessUnitId;
+  if (Array.isArray(body.itemIds)) patch.itemIds = body.itemIds.map(String);
+  if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+
+  const pipeline = await updatePricingPipeline(tenant.id, req.params.id, patch);
+  if (!pipeline) {
+    res.status(404).json({ error: "pipeline not found" });
+    return;
+  }
+  res.json({ pipeline });
+});
+
+pricingRouter.delete("/pricing/pipelines/:id", async (req, res) => {
+  await deletePricingPipeline(req.tenant!.id, req.params.id);
+  res.json({ ok: true });
+});
+
+pricingRouter.post("/pricing/pipelines/:id/run", async (req, res) => {
+  const tenant = req.tenant!;
+  const result = await runPricingPipelineNow(tenant, req.params.id);
+  if (!result) {
+    res.status(404).json({ error: "pipeline not found" });
+    return;
+  }
+  res.json(result);
 });

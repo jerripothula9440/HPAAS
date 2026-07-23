@@ -431,6 +431,18 @@ var require_customParseFormat = __commonJS({
   }
 });
 
+// ../../packages/types/dist/index.js
+function pricingConfig(config) {
+  return config.pricingConfig ?? {
+    applyToAllItems: false,
+    defaultMaxChangePercent: 15,
+    roundingRule: "none",
+    safetyNetEnabled: true,
+    useBusinessUnitsInPricing: false,
+    items: {}
+  };
+}
+
 // ../../node_modules/.pnpm/@anthropic-ai+sdk@0.90.0/node_modules/@anthropic-ai/sdk/internal/tslib.mjs
 function __classPrivateFieldSet(receiver, state, value, kind, f) {
   if (kind === "m")
@@ -6614,6 +6626,30 @@ async function generateCampaignCopy(req, provider = defaultProvider()) {
   }
   return { ...result, variables: [...new Set(used)] };
 }
+function fallbackPricingRationale(item) {
+  return item.demandTrend === "rising" ? "Demand has been rising \u2014 a small increase captures it." : item.demandTrend === "falling" ? "Demand has cooled \u2014 a small cut may bring customers back." : "Demand has been steady.";
+}
+async function generatePricingRationale(req, provider = defaultProvider()) {
+  const byId = new Map(req.items.map((it) => [it.menuItemId, it]));
+  let results = [];
+  try {
+    results = await provider.writePricingRationale(req);
+  } catch {
+    results = [];
+  }
+  const rationales = {};
+  for (const r of results) {
+    if (byId.has(r.menuItemId) && typeof r.rationale === "string" && r.rationale.trim()) {
+      rationales[r.menuItemId] = r.rationale.trim().slice(0, 200);
+    }
+  }
+  for (const item of req.items) {
+    if (!rationales[item.menuItemId]) {
+      rationales[item.menuItemId] = fallbackPricingRationale(item);
+    }
+  }
+  return rationales;
+}
 
 // ../../packages/core/dist/ingestion.js
 var import_dayjs = __toESM(require_dayjs_min(), 1);
@@ -6740,6 +6776,10 @@ var mapCampaign = (r) => ({
   approvedBy: r.approved_by,
   callListCsv: r.call_list_csv
 });
+async function getTenantById(id) {
+  const row = await queryOne(`SELECT * FROM tenants WHERE id = $1`, [id]);
+  return row ? mapTenant(row) : null;
+}
 async function listTenants() {
   return (await query(`SELECT * FROM tenants ORDER BY created_at`)).map(mapTenant);
 }
@@ -6871,13 +6911,107 @@ var mapMenuItem = (r) => ({
   available: r.available,
   gstRate: r.gst_rate === null || r.gst_rate === void 0 ? null : Number(r.gst_rate),
   hsnCode: r.hsn_code ?? null,
+  businessUnitIds: r.business_unit_ids ?? [],
+  imageUrl: r.image_url ?? null,
   createdAt: r.created_at
 });
+async function listMenuItems(tenantId, opts = {}) {
+  const rows = await query(`SELECT m.*, bp.price AS branch_price
+     FROM menu_items m
+     LEFT JOIN menu_item_branch_prices bp
+       ON bp.tenant_id = m.tenant_id AND bp.menu_item_id = m.id AND bp.business_unit_id = $2
+     WHERE m.tenant_id = $1
+       AND ($2::text IS NULL OR m.business_unit_ids = '[]'::jsonb OR m.business_unit_ids @> to_jsonb($2::text))
+     ORDER BY m.category, m.name`, [tenantId, opts.businessUnitId ?? null]);
+  return rows.map((r) => ({
+    ...mapMenuItem(r),
+    branchPrice: r.branch_price !== null && r.branch_price !== void 0 ? Number(r.branch_price) : null
+  }));
+}
+async function upsertMenuItemBranchPrice(tenantId, menuItemId, businessUnitId, price) {
+  if (price === null) {
+    await query(`DELETE FROM menu_item_branch_prices WHERE tenant_id = $1 AND menu_item_id = $2 AND business_unit_id = $3`, [tenantId, menuItemId, businessUnitId]);
+    return;
+  }
+  await query(`INSERT INTO menu_item_branch_prices (tenant_id, menu_item_id, business_unit_id, price)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (tenant_id, menu_item_id, business_unit_id) DO UPDATE SET price = EXCLUDED.price, updated_at = now()`, [tenantId, menuItemId, businessUnitId, price]);
+}
+async function updateMenuItemPrice(tenantId, itemId, price) {
+  const row = await queryOne(`UPDATE menu_items SET price = $3 WHERE tenant_id = $1 AND id = $2 RETURNING *`, [tenantId, itemId, price]);
+  return row ? mapMenuItem(row) : null;
+}
 async function recentMenuItems(tenantId, days) {
   const rows = await query(`SELECT * FROM menu_items
      WHERE tenant_id = $1 AND available AND created_at > now() - ($2 || ' days')::interval
      ORDER BY created_at DESC LIMIT 5`, [tenantId, String(days)]);
   return rows.map(mapMenuItem);
+}
+
+// ../../packages/db/dist/repos-pricing.js
+async function tenantItemSalesByName(tenantId, businessUnitId) {
+  const rows = await query(`SELECT item->>'name' AS name,
+            coalesce(sum((item->>'qty')::numeric) FILTER (WHERE e.ts >= now() - interval '90 days'), 0) AS units_90d,
+            coalesce(sum((item->>'qty')::numeric)
+              FILTER (WHERE e.ts >= now() - interval '180 days' AND e.ts < now() - interval '90 days'), 0) AS units_prior_90d
+     FROM events e, jsonb_array_elements(e.items) AS item
+     WHERE e.tenant_id = $1 AND e.event_type = 'purchase' AND item->>'name' <> ''
+       AND ($2::text IS NULL OR e.location_id = $2)
+     GROUP BY 1`, [tenantId, businessUnitId ?? null]);
+  return new Map(rows.map((r) => [
+    String(r.name).toLowerCase(),
+    { unitsSold90d: Number(r.units_90d), unitsSoldPrior90d: Number(r.units_prior_90d) }
+  ]));
+}
+async function upsertPriceRecommendations(tenantId, rows) {
+  for (const r of rows) {
+    await query(`INSERT INTO price_recommendations
+         (tenant_id, menu_item_id, current_price, suggested_price, change_percent, demand_trend, confidence, rationale, needs_review, business_unit_id, computed_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+       ON CONFLICT (tenant_id, menu_item_id, business_unit_id) DO UPDATE SET
+         current_price = EXCLUDED.current_price,
+         suggested_price = EXCLUDED.suggested_price,
+         change_percent = EXCLUDED.change_percent,
+         demand_trend = EXCLUDED.demand_trend,
+         confidence = EXCLUDED.confidence,
+         rationale = EXCLUDED.rationale,
+         needs_review = EXCLUDED.needs_review,
+         computed_at = now()`, [
+      tenantId,
+      r.menuItemId,
+      r.currentPrice,
+      r.suggestedPrice,
+      r.changePercent,
+      r.demandTrend,
+      r.confidence,
+      r.rationale,
+      r.needsReview,
+      r.businessUnitId ?? ""
+    ]);
+  }
+}
+var mapPricingPipeline = (r) => ({
+  id: r.id,
+  tenantId: r.tenant_id,
+  name: r.name,
+  mode: r.mode,
+  scheduleType: r.schedule_type,
+  scheduleIntervalDays: r.schedule_interval_days,
+  scheduleDate: r.schedule_date ? new Date(r.schedule_date).toISOString().slice(0, 10) : null,
+  businessUnitId: r.business_unit_id ?? "",
+  itemIds: r.item_ids ?? [],
+  enabled: r.enabled,
+  lastRunAt: r.last_run_at,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at
+});
+async function listAllEnabledPricingPipelines() {
+  const rows = await query(`SELECT * FROM pricing_pipelines WHERE enabled = true`, []);
+  return rows.map(mapPricingPipeline);
+}
+async function markPricingPipelineRun(id, opts = {}) {
+  await query(`UPDATE pricing_pipelines SET last_run_at = now(), enabled = CASE WHEN $2::boolean THEN false ELSE enabled END, updated_at = now()
+     WHERE id = $1`, [id, Boolean(opts.disable)]);
 }
 
 // ../../packages/db/dist/migrate.js
@@ -7250,6 +7384,71 @@ function variablesForProfile(profile, features, extra = {}) {
   };
 }
 
+// ../../packages/core/dist/pricing.js
+var TREND_THRESHOLD = 0.2;
+var TREND_TO_PERCENT_SCALE = 25;
+var FESTIVAL_BOOST_PERCENT = 5;
+function applyRounding(price, rule) {
+  switch (rule) {
+    case "nearest_5":
+      return Math.round(price / 5) * 5;
+    case "nearest_10":
+      return Math.round(price / 10) * 10;
+    case "end_99":
+      return Math.max(0, Math.floor(price / 10) * 10 - 1 + 0.99);
+    case "end_95":
+      return Math.max(0, Math.floor(price / 10) * 10 - 1 + 0.95);
+    case "none":
+    default:
+      return price;
+  }
+}
+function clamp(price, bounds) {
+  let clamped = price;
+  if (bounds.minPrice != null)
+    clamped = Math.max(bounds.minPrice, clamped);
+  if (bounds.maxPrice != null)
+    clamped = Math.min(bounds.maxPrice, clamped);
+  return clamped;
+}
+function computePriceRecommendation(signal, bounds) {
+  const { menuItemId, name, currentPrice, unitsSold90d, unitsSoldPrior90d } = signal;
+  const trendPct = unitsSoldPrior90d > 0 ? (unitsSold90d - unitsSoldPrior90d) / unitsSoldPrior90d : unitsSold90d > 0 ? 1 : 0;
+  let demandTrend = "flat";
+  if (trendPct > TREND_THRESHOLD)
+    demandTrend = "rising";
+  else if (trendPct < -TREND_THRESHOLD)
+    demandTrend = "falling";
+  let changePercent = 0;
+  if (demandTrend === "rising") {
+    changePercent = Math.min(bounds.maxChangePercent, Math.abs(trendPct) * TREND_TO_PERCENT_SCALE);
+  } else if (demandTrend === "falling") {
+    changePercent = -Math.min(bounds.maxChangePercent, Math.abs(trendPct) * TREND_TO_PERCENT_SCALE);
+  }
+  if (bounds.festivalBoost && demandTrend !== "falling") {
+    changePercent = Math.min(bounds.maxChangePercent, changePercent + FESTIVAL_BOOST_PERCENT);
+  }
+  const preClampPrice = currentPrice * (1 + changePercent / 100);
+  const clampedPrice = clamp(preClampPrice, bounds);
+  const roundedPrice = clamp(applyRounding(clampedPrice, bounds.roundingRule), bounds);
+  const suggestedPrice = Math.round(roundedPrice * 100) / 100;
+  const finalChangePercent = currentPrice > 0 ? Math.round((suggestedPrice - currentPrice) / currentPrice * 1e4) / 100 : 0;
+  const dataVolume = unitsSold90d + unitsSoldPrior90d;
+  const confidence = dataVolume >= 30 ? "high" : dataVolume >= 8 ? "medium" : "low";
+  const hitBound = Math.abs(preClampPrice - clampedPrice) > 5e-3;
+  const needsReview = bounds.safetyNetEnabled !== false && (confidence === "low" || hitBound);
+  return {
+    menuItemId,
+    name,
+    currentPrice,
+    suggestedPrice,
+    changePercent: finalChangePercent,
+    demandTrend,
+    confidence,
+    needsReview
+  };
+}
+
 // ../../packages/jobs/dist/copy-generator.js
 var import_dayjs4 = __toESM(require_dayjs_min(), 1);
 function makeCopyGenerator() {
@@ -7306,6 +7505,147 @@ function upcomingFestival(ctx) {
   return entry ? { name: entry.name, date: entry.date, categories: entry.categories } : void 0;
 }
 
+// ../../packages/jobs/dist/pricing.js
+async function refreshPricingRecommendations(tenant, opts = {}) {
+  const businessUnitId = opts.businessUnitId ?? "";
+  const config = pricingConfig(tenant.config);
+  const menuItems = await listMenuItems(tenant.id, { businessUnitId: businessUnitId || void 0 });
+  const targets = menuItems.filter((m) => (config.applyToAllItems || config.items[m.id]?.enabled) && !config.items[m.id]?.manualOverride && // listMenuItems already filters to items sold at this branch (or
+  // everywhere) when businessUnitId is set — this is belt-and-suspenders.
+  (businessUnitId === "" || m.businessUnitIds.length === 0 || m.businessUnitIds.includes(businessUnitId)));
+  if (targets.length === 0)
+    return [];
+  const salesByName = await tenantItemSalesByName(tenant.id, businessUnitId || void 0);
+  const window2 = activeFestivalWindow(tenant, /* @__PURE__ */ new Date());
+  const activeFestival = window2 ? tenant.config.festivals.find((f) => f.name === window2.name) : null;
+  const recommendations = targets.map((item) => {
+    const itemConfig = config.items[item.id];
+    const signal = salesByName.get(item.name.toLowerCase()) ?? { unitsSold90d: 0, unitsSoldPrior90d: 0 };
+    const festivalBoost = Boolean(activeFestival?.categories.includes(item.category));
+    const currentPrice = businessUnitId ? item.branchPrice ?? item.price : item.price;
+    return computePriceRecommendation({
+      menuItemId: item.id,
+      name: item.name,
+      currentPrice,
+      unitsSold90d: signal.unitsSold90d,
+      unitsSoldPrior90d: signal.unitsSoldPrior90d
+    }, {
+      minPrice: itemConfig?.minPrice,
+      maxPrice: itemConfig?.maxPrice,
+      maxChangePercent: itemConfig?.maxChangePercent ?? config.defaultMaxChangePercent,
+      festivalBoost,
+      roundingRule: config.roundingRule,
+      safetyNetEnabled: config.safetyNetEnabled
+    });
+  });
+  const rationaleByItem = await generatePricingRationale({
+    shopName: tenant.config.branding.shopName,
+    occasion: config.occasion ?? activeFestival?.name ?? null,
+    items: recommendations.map((r) => ({
+      menuItemId: r.menuItemId,
+      name: r.name,
+      currentPrice: r.currentPrice,
+      suggestedPrice: r.suggestedPrice,
+      demandTrend: r.demandTrend
+    }))
+  });
+  const rows = recommendations.map((r) => ({
+    menuItemId: r.menuItemId,
+    currentPrice: r.currentPrice,
+    suggestedPrice: r.suggestedPrice,
+    changePercent: r.changePercent,
+    demandTrend: r.demandTrend,
+    confidence: r.confidence,
+    rationale: rationaleByItem[r.menuItemId] ?? "",
+    needsReview: r.needsReview,
+    businessUnitId
+  }));
+  await upsertPriceRecommendations(tenant.id, rows);
+  return recommendations.map((r) => ({
+    menuItemId: r.menuItemId,
+    name: r.name,
+    currentPrice: r.currentPrice,
+    suggestedPrice: r.suggestedPrice,
+    changePercent: r.changePercent,
+    demandTrend: r.demandTrend,
+    confidence: r.confidence,
+    rationale: rationaleByItem[r.menuItemId] ?? null,
+    needsReview: r.needsReview,
+    businessUnitId,
+    computedAt: /* @__PURE__ */ new Date()
+  }));
+}
+async function applyPriceRecommendations(tenantId, recommendations, businessUnitId = "") {
+  for (const r of recommendations) {
+    if (businessUnitId) {
+      await upsertMenuItemBranchPrice(tenantId, r.menuItemId, businessUnitId, r.suggestedPrice);
+    } else {
+      await updateMenuItemPrice(tenantId, r.menuItemId, r.suggestedPrice);
+    }
+  }
+  return recommendations.length;
+}
+
+// ../../packages/jobs/dist/pricing-pipelines.js
+var MS_PER_DAY2 = 24 * 60 * 60 * 1e3;
+function isPipelineDue(pipeline, now) {
+  if (!pipeline.enabled)
+    return false;
+  if (pipeline.scheduleType === "on_date") {
+    if (pipeline.lastRunAt)
+      return false;
+    if (!pipeline.scheduleDate)
+      return false;
+    return new Date(pipeline.scheduleDate) <= now;
+  }
+  if (!pipeline.lastRunAt)
+    return true;
+  const daysSinceLastRun = (now.getTime() - pipeline.lastRunAt.getTime()) / MS_PER_DAY2;
+  if (pipeline.scheduleType === "daily")
+    return daysSinceLastRun >= 1;
+  if (pipeline.scheduleType === "weekly")
+    return daysSinceLastRun >= 7;
+  if (pipeline.scheduleType === "every_n_days")
+    return daysSinceLastRun >= (pipeline.scheduleIntervalDays ?? 1);
+  return false;
+}
+async function executePipeline(tenant, pipeline) {
+  const businessUnitId = pipeline.businessUnitId || void 0;
+  const all = await refreshPricingRecommendations(tenant, { businessUnitId });
+  const scoped = pipeline.itemIds.length > 0 ? all.filter((r) => pipeline.itemIds.includes(r.menuItemId)) : all;
+  if (pipeline.mode !== "automatic") {
+    return { refreshed: scoped.length, applied: 0, skippedNeedsReview: 0 };
+  }
+  const applicable = scoped.filter((r) => !r.needsReview);
+  const applied = await applyPriceRecommendations(tenant.id, applicable, pipeline.businessUnitId);
+  return { refreshed: scoped.length, applied, skippedNeedsReview: scoped.length - applicable.length };
+}
+async function runDuePricingPipelines() {
+  const now = /* @__PURE__ */ new Date();
+  const pipelines = await listAllEnabledPricingPipelines();
+  if (pipelines.length === 0)
+    return;
+  const tenantCache = /* @__PURE__ */ new Map();
+  for (const pipeline of pipelines) {
+    if (!isPipelineDue(pipeline, now))
+      continue;
+    let tenant = tenantCache.get(pipeline.tenantId);
+    if (tenant === void 0) {
+      tenant = await getTenantById(pipeline.tenantId);
+      tenantCache.set(pipeline.tenantId, tenant);
+    }
+    if (!tenant || !tenant.config.modules.pricing?.enabled)
+      continue;
+    try {
+      const result = await executePipeline(tenant, pipeline);
+      console.log(`[pricing-pipeline] ${tenant.name} / "${pipeline.name}": refreshed ${result.refreshed}` + (pipeline.mode === "automatic" ? `, applied ${result.applied}, skipped ${result.skippedNeedsReview} (needs review)` : ""));
+    } catch (err) {
+      console.error(`[pricing-pipeline] ${pipeline.name} (tenant ${pipeline.tenantId}) failed:`, err);
+    }
+    await markPricingPipelineRun(pipeline.id, { disable: pipeline.scheduleType === "on_date" });
+  }
+}
+
 // ../../packages/jobs/dist/compute-features.js
 async function computeFeaturesJob() {
   for (const tenant of await listTenants()) {
@@ -7344,6 +7684,7 @@ async function handler(req, res) {
   try {
     await computeFeaturesJob();
     await evaluateTriggersJob();
+    await runDuePricingPipelines();
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ ok: true }));

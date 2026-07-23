@@ -6,7 +6,13 @@
 
 import { generatePricingRationale } from "@hpas/ai";
 import { activeFestivalWindow, computePriceRecommendation } from "@hpas/core";
-import { listMenuItems, tenantItemSalesByName, upsertPriceRecommendations } from "@hpas/db";
+import {
+  listMenuItems,
+  tenantItemSalesByName,
+  updateMenuItemPrice,
+  upsertMenuItemBranchPrice,
+  upsertPriceRecommendations,
+} from "@hpas/db";
 import { pricingConfig, type PriceRecommendation, type Tenant } from "@hpas/types";
 
 export async function refreshPricingRecommendations(
@@ -94,4 +100,25 @@ export async function refreshPricingRecommendations(
     businessUnitId,
     computedAt: new Date(),
   }));
+}
+
+/**
+ * Applies a set of (already-computed) recommendations — branch-scoped writes go to the
+ * per-branch price override, unscoped writes go to the shared base price. Shared by the
+ * manual "Apply"/"Apply all" API route and automatic pipeline runs; callers are responsible
+ * for filtering out `needsReview` rows first — the Safety Net is never bypassed here.
+ */
+export async function applyPriceRecommendations(
+  tenantId: string,
+  recommendations: Array<Pick<PriceRecommendation, "menuItemId" | "suggestedPrice">>,
+  businessUnitId = ""
+): Promise<number> {
+  for (const r of recommendations) {
+    if (businessUnitId) {
+      await upsertMenuItemBranchPrice(tenantId, r.menuItemId, businessUnitId, r.suggestedPrice);
+    } else {
+      await updateMenuItemPrice(tenantId, r.menuItemId, r.suggestedPrice);
+    }
+  }
+  return recommendations.length;
 }

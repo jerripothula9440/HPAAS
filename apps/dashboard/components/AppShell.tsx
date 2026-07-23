@@ -8,7 +8,7 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import type { ModuleKey } from "@hpas/types";
+import { areasConfig, type ModuleKey } from "@hpas/types";
 import { clearSession, getSession, type Session } from "../lib/api";
 
 type Area = "personalization" | "pricing";
@@ -63,7 +63,12 @@ export default function AppShell({ children }: { children: ReactNode }) {
     }
     setSessionState(s);
     const stored = window.localStorage.getItem(AREA_STORAGE_KEY);
-    if (stored === "personalization" || stored === "pricing") setArea(stored);
+    const areas = areasConfig(s.tenant.config);
+    if ((stored === "personalization" || stored === "pricing") && areas[stored]) {
+      setArea(stored);
+    } else if (!areas.personalization && areas.pricing) {
+      setArea("pricing");
+    }
   }, [router]);
 
   if (!session) return null;
@@ -71,6 +76,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const { config } = session.tenant;
   const colors = config.branding.colors;
   const pricingEnabled = Boolean(config.modules.pricing?.enabled);
+  const areas = areasConfig(config);
 
   function selectArea(next: Area) {
     setArea(next);
@@ -105,6 +111,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const pricingLinks: NavLink[] = [
     { key: "pricing-dashboard", label: "Dashboard", path: "/pricing/dashboard" },
     { key: "pricing-recommendations", label: "Recommendations", path: "/pricing" },
+    { key: "pricing-pipelines", label: "Pipelines", path: "/pricing/pipelines" },
     { key: "pricing-item-settings", label: "Item Settings", path: "/pricing/settings" },
     ...pricingModuleLinks,
   ];
@@ -152,20 +159,24 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <span>{config.branding.shopName}</span>
         </div>
         <div className="area-tabs">
-          <button
-            className={`area-tab${area === "personalization" ? " active" : ""}`}
-            onClick={() => selectArea("personalization")}
-          >
-            Personalization
-          </button>
-          <button className={`area-tab${area === "pricing" ? " active" : ""}`} onClick={() => selectArea("pricing")}>
-            Pricing{!pricingEnabled ? " 🔒" : ""}
-          </button>
+          {areas.personalization && (
+            <button
+              className={`area-tab${area === "personalization" ? " active" : ""}`}
+              onClick={() => selectArea("personalization")}
+            >
+              Personalization
+            </button>
+          )}
+          {areas.pricing && (
+            <button className={`area-tab${area === "pricing" ? " active" : ""}`} onClick={() => selectArea("pricing")}>
+              Pricing{!pricingEnabled ? " 🔒" : ""}
+            </button>
+          )}
         </div>
       </header>
       <div className="shell-body">
         <aside className="sidebar">
-          {areaLinks.map(navLink)}
+          {(area === "personalization" ? areas.personalization : areas.pricing) && areaLinks.map(navLink)}
           {accountLinks.length > 0 && (
             <>
               <div className="nav-group-header" style={{ cursor: "default", marginTop: 12 }}>

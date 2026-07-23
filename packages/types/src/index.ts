@@ -257,6 +257,17 @@ export interface BusinessUnitsConfig {
   units: BusinessUnit[];
 }
 
+// ---------- Area visibility (top-bar tabs) ----------
+// Distinct from modules.pricing.enabled: that controls whether an already
+// visible Pricing tab is locked (upsell) or unlocked. This controls whether
+// the tab exists at all for this tenant — e.g. a Pricing-only tenant with
+// no interest in Personalization ever sees no Personalization tab.
+
+export interface AreasConfig {
+  personalization: boolean;
+  pricing: boolean;
+}
+
 export interface TenantConfig {
   slug: string;
   branding: TenantBranding;
@@ -284,6 +295,8 @@ export interface TenantConfig {
   pricingDashboard?: PricingDashboardConfig;
   /** Optional — defaults applied in code when absent (see businessUnitsConfig()). */
   businessUnits?: BusinessUnitsConfig;
+  /** Optional — defaults applied in code when absent (see areasConfig()). */
+  areas?: Partial<AreasConfig>;
 }
 
 /** Loyalty settings with defaults for tenants configured before the feature existed. */
@@ -345,6 +358,14 @@ export function personalizationDashboardConfig(config: TenantConfig): Personaliz
 /** Business units (branches) with defaults for tenants who haven't configured any yet. */
 export function businessUnitsConfig(config: TenantConfig): BusinessUnitsConfig {
   return config.businessUnits ?? { enabled: false, units: [] };
+}
+
+/** Area (top-bar tab) visibility, defaulting both on — unchanged behavior for every existing tenant. */
+export function areasConfig(config: TenantConfig): AreasConfig {
+  return {
+    personalization: config.areas?.personalization ?? true,
+    pricing: config.areas?.pricing ?? true,
+  };
 }
 
 const DEFAULT_PRICING_WIDGETS: PricingWidget[] = [
@@ -681,6 +702,35 @@ export interface PriceRecommendation {
   /** "" = all branches (tenant-wide); otherwise scoped to one business unit's own sales. */
   businessUnitId: string;
   computedAt: Date;
+}
+
+// ---------- Pricing pipelines ----------
+// Scheduled, scoped refresh (+ optional auto-apply) of price recommendations —
+// carries no bounds/rounding of its own; those still come from PricingConfig,
+// one source of truth. The Safety Net always still holds back needsReview
+// items, even in "automatic" mode.
+
+export type PricingPipelineMode = "manual" | "automatic";
+export type PricingPipelineScheduleType = "daily" | "weekly" | "every_n_days" | "on_date";
+
+export interface PricingPipeline {
+  id: string;
+  tenantId: string;
+  name: string;
+  mode: PricingPipelineMode;
+  scheduleType: PricingPipelineScheduleType;
+  /** Only meaningful when scheduleType === "every_n_days". */
+  scheduleIntervalDays: number | null;
+  /** Only meaningful when scheduleType === "on_date" — ISO date (YYYY-MM-DD). */
+  scheduleDate: string | null;
+  /** "" = all branches. Only meaningful when Business Units in Pricing is on. */
+  businessUnitId: string;
+  /** Further restricts scope beyond Item Settings' own enabled items; [] = every eligible item. */
+  itemIds: string[];
+  enabled: boolean;
+  lastRunAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 // ---------- Platform notifications ----------
