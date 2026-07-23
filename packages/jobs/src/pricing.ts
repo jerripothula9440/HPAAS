@@ -40,6 +40,8 @@ export async function refreshPricingRecommendations(tenant: Tenant): Promise<Pri
         maxPrice: itemConfig?.maxPrice,
         maxChangePercent: itemConfig?.maxChangePercent ?? config.defaultMaxChangePercent,
         festivalBoost,
+        roundingRule: config.roundingRule,
+        safetyNetEnabled: config.safetyNetEnabled,
       }
     );
   });
@@ -64,6 +66,7 @@ export async function refreshPricingRecommendations(tenant: Tenant): Promise<Pri
     demandTrend: r.demandTrend,
     confidence: r.confidence,
     rationale: rationaleByItem[r.menuItemId] ?? "",
+    needsReview: r.needsReview,
   }));
   await upsertPriceRecommendations(tenant.id, rows);
 
@@ -76,6 +79,7 @@ export async function refreshPricingRecommendations(tenant: Tenant): Promise<Pri
     demandTrend: r.demandTrend,
     confidence: r.confidence,
     rationale: rationaleByItem[r.menuItemId] ?? null,
+    needsReview: r.needsReview,
     computedAt: new Date(),
   }));
 }

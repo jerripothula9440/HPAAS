@@ -1,8 +1,9 @@
 "use client";
 
 // Pricing > Item Settings — which items to optimize (or all of them), the
-// tenant-wide default max %-change, an optional occasion tie-in, and
-// per-item min/max price + max %-change overrides.
+// tenant-wide default max %-change, an optional occasion tie-in, per-item
+// min/max price + max %-change overrides, plus rounding and the safety-net
+// review flag — laid out as a grid of cards.
 
 import { useEffect, useState } from "react";
 import AppShell from "../../../components/AppShell";
@@ -17,6 +18,8 @@ interface MenuItem {
   available: boolean;
 }
 
+type RoundingRule = "none" | "nearest_5" | "nearest_10" | "end_99" | "end_95";
+
 interface PricingItemConfig {
   enabled: boolean;
   minPrice?: number;
@@ -28,8 +31,18 @@ interface PricingConfig {
   applyToAllItems: boolean;
   defaultMaxChangePercent: number;
   occasion?: string;
+  roundingRule?: RoundingRule;
+  safetyNetEnabled?: boolean;
   items: Record<string, PricingItemConfig>;
 }
+
+const ROUNDING_OPTIONS: Array<{ value: RoundingRule; label: string; example: string }> = [
+  { value: "none", label: "No rounding", example: "₹123.40 stays ₹123.40" },
+  { value: "nearest_5", label: "Nearest ₹5", example: "₹123.40 → ₹125" },
+  { value: "nearest_10", label: "Nearest ₹10", example: "₹123.40 → ₹120" },
+  { value: "end_99", label: "End in .99", example: "₹123.40 → ₹119.99" },
+  { value: "end_95", label: "End in .95", example: "₹123.40 → ₹119.95" },
+];
 
 export default function PricingSettingsPage() {
   const [menuItems, setMenuItems] = useState<MenuItem[] | null>(null);
@@ -96,11 +109,55 @@ export default function PricingSettingsPage() {
       <div className="page-title">Pricing Item Settings</div>
       <div className="page-sub">
         Which items to optimize and within what bounds. See <a href="/pricing">Recommendations</a> to refresh
-        and apply suggestions.
+        and apply suggestions.{saving ? " · saving…" : ""}
       </div>
       {error && <div className="error-text" style={{ marginBottom: 16 }}>{error}</div>}
 
+      <div className="grid grid-2">
+        <div className="card">
+          <div className="section-title">Rounding Rule</div>
+          <div className="muted" style={{ marginBottom: 12, fontSize: "0.9rem" }}>
+            Applied to every suggested price as the last step, after your min/max bounds.
+          </div>
+          <select
+            value={config.roundingRule ?? "none"}
+            onChange={(e) => saveConfig({ ...config, roundingRule: e.target.value as RoundingRule })}
+            style={{ width: "100%", marginBottom: 8 }}
+          >
+            {ROUNDING_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <div className="muted" style={{ fontSize: "0.85rem" }}>
+            {ROUNDING_OPTIONS.find((o) => o.value === (config.roundingRule ?? "none"))?.example}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="section-title">Safety Net</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={config.safetyNetEnabled ?? true}
+                onChange={(e) => saveConfig({ ...config, safetyNetEnabled: e.target.checked })}
+              />
+              <span className="slider" />
+            </label>
+            <span>Flag recommendations that need review</span>
+          </div>
+          <div className="muted" style={{ fontSize: "0.9rem" }}>
+            When on, any recommendation built on thin sales data or that hit its min/max
+            bound is marked "needs review" on the Recommendations page and can&apos;t be
+            applied without an explicit confirmation.
+          </div>
+        </div>
+      </div>
+
       <div className="card">
+        <div className="section-title">Item Bounds</div>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 16 }}>
           <label className="toggle">
             <input
@@ -110,7 +167,7 @@ export default function PricingSettingsPage() {
             />
             <span className="slider" />
           </label>
-          <span>Optimize all items{saving ? " · saving…" : ""}</span>
+          <span>Optimize all items</span>
         </div>
 
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>

@@ -173,6 +173,8 @@ export interface PricingItemConfig {
   maxChangePercent?: number;
 }
 
+export type PricingRoundingRule = "none" | "nearest_5" | "nearest_10" | "end_99" | "end_95";
+
 export interface PricingConfig {
   /** Optimize every menu item, ignoring individual `items[id].enabled` flags. */
   applyToAllItems: boolean;
@@ -180,7 +182,33 @@ export interface PricingConfig {
   defaultMaxChangePercent: number;
   /** Name of a festival in `festivals[]` to bias recommendations toward, if any. */
   occasion?: string;
+  /** Charm-pricing applied to every suggested price as the last step. Default "none". */
+  roundingRule?: PricingRoundingRule;
+  /** Flags thin-data/bound-hitting recommendations as needing review before applying. Default true. */
+  safetyNetEnabled?: boolean;
   items: Record<string, PricingItemConfig>;
+}
+
+// ---------- Personalization dashboard ----------
+
+export type PersonalizationWidgetType =
+  | "customer_stats"
+  | "repeat_trend"
+  | "segment_sizes"
+  | "top_customers"
+  | "campaign_ab_compare";
+
+export interface PersonalizationWidget {
+  /** Stable id for ordering/removal — not a DB id, just a client-assigned key. */
+  id: string;
+  type: PersonalizationWidgetType;
+  title?: string;
+  /** Only campaign_ab_compare uses this today. */
+  config?: { campaignId?: string };
+}
+
+export interface PersonalizationDashboardConfig {
+  widgets: PersonalizationWidget[];
 }
 
 export interface TenantConfig {
@@ -204,6 +232,8 @@ export interface TenantConfig {
   billingProfile?: BillingProfileConfig;
   /** Optional — defaults applied in code when absent (see pricingConfig()). */
   pricingConfig?: PricingConfig;
+  /** Optional — defaults applied in code when absent (see personalizationDashboardConfig()). */
+  personalizationDashboard?: PersonalizationDashboardConfig;
 }
 
 /** Loyalty settings with defaults for tenants configured before the feature existed. */
@@ -238,7 +268,27 @@ export function billingProfileIsComplete(profile: BillingProfileConfig): boolean
 
 /** Pricing settings with defaults for tenants who haven't configured any items yet. */
 export function pricingConfig(config: TenantConfig): PricingConfig {
-  return config.pricingConfig ?? { applyToAllItems: false, defaultMaxChangePercent: 15, items: {} };
+  return (
+    config.pricingConfig ?? {
+      applyToAllItems: false,
+      defaultMaxChangePercent: 15,
+      roundingRule: "none",
+      safetyNetEnabled: true,
+      items: {},
+    }
+  );
+}
+
+const DEFAULT_PERSONALIZATION_WIDGETS: PersonalizationWidget[] = [
+  { id: "default-stats", type: "customer_stats" },
+  { id: "default-repeat-trend", type: "repeat_trend" },
+  { id: "default-segment-sizes", type: "segment_sizes" },
+  { id: "default-top-customers", type: "top_customers" },
+];
+
+/** Personalization dashboard widgets, defaulting to a sensible starter set. */
+export function personalizationDashboardConfig(config: TenantConfig): PersonalizationDashboardConfig {
+  return config.personalizationDashboard ?? { widgets: DEFAULT_PERSONALIZATION_WIDGETS };
 }
 
 export interface Tenant {
@@ -553,6 +603,8 @@ export interface PriceRecommendation {
   demandTrend: "rising" | "falling" | "flat";
   confidence: "low" | "medium" | "high";
   rationale: string | null;
+  /** True when thin data or hitting its min/max bound means this should be reviewed before applying. */
+  needsReview: boolean;
   computedAt: Date;
 }
 

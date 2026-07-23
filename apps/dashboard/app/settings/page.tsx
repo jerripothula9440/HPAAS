@@ -151,6 +151,22 @@ export default function SettingsPage() {
               Email fallback: {data.email.enabled ? `on (${data.email.fromAddress})` : "off"}
             </div>
           </div>
+
+          <div className="card">
+            <div className="section-title">Version</div>
+            <table>
+              <tbody>
+                <tr>
+                  <td className="muted">Personalization</td>
+                  <td>1.0.0-demo</td>
+                </tr>
+                <tr>
+                  <td className="muted">Pricing</td>
+                  <td>1.0.0-demo</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </AppShell>

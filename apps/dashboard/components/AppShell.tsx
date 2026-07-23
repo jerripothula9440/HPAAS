@@ -65,11 +65,18 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const { config } = session.tenant;
   const colors = config.branding.colors;
 
-  const personalizationLinks: NavLink[] = (
+  const personalizationModuleLinks: NavLink[] = (
     Object.entries(PERSONALIZATION_META) as Array<[ModuleKey, { label: string; path: string }]>
   )
     .filter(([key]) => config.modules[key]?.enabled)
     .map(([key, meta]) => ({ key, label: meta.label, path: meta.path }));
+  // "Dashboard" isn't gated by its own module — it's a configurable view over
+  // whichever personalization data the tenant already has, so it shows
+  // whenever the group itself does.
+  const personalizationLinks: NavLink[] =
+    personalizationModuleLinks.length > 0
+      ? [{ key: "personalization-dashboard", label: "Dashboard", path: "/personalization/dashboard" }, ...personalizationModuleLinks]
+      : [];
 
   const pricingEnabled = Boolean(config.modules.pricing?.enabled);
 

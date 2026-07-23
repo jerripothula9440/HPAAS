@@ -18,6 +18,7 @@ interface Recommendation {
   demandTrend: "rising" | "falling" | "flat";
   confidence: "low" | "medium" | "high";
   rationale: string | null;
+  needsReview: boolean;
 }
 
 const TREND_ARROW: Record<Recommendation["demandTrend"], string> = {
@@ -38,6 +39,8 @@ export default function PricingRecommendationsPage() {
   const [applying, setApplying] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [locked, setLocked] = useState(false);
+  const [reviewed, setReviewed] = useState<Record<string, boolean>>({});
+  const [notice, setNotice] = useState("");
 
   useEffect(() => {
     loadRecommendations();
@@ -68,11 +71,19 @@ export default function PricingRecommendationsPage() {
   async function apply(menuItemId?: string) {
     setApplying(menuItemId ?? "all");
     setError("");
+    setNotice("");
     try {
-      await api("/pricing/apply", {
+      const result = await api<{ applied: number; skippedNeedsReview: number }>("/pricing/apply", {
         method: "POST",
-        body: JSON.stringify(menuItemId ? { menuItemId } : { all: true }),
+        body: JSON.stringify(
+          menuItemId ? { menuItemId, confirmReview: Boolean(reviewed[menuItemId]) } : { all: true }
+        ),
       });
+      if (!menuItemId && result.skippedNeedsReview > 0) {
+        setNotice(
+          `Applied ${result.applied}. ${result.skippedNeedsReview} need${result.skippedNeedsReview === 1 ? "s" : ""} review — apply ${result.skippedNeedsReview === 1 ? "it" : "them"} individually.`
+        );
+      }
       loadRecommendations();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -106,6 +117,7 @@ export default function PricingRecommendationsPage() {
         Pick which items to optimize and set bounds under <a href="/pricing/settings">Item Settings</a>.
       </div>
       {error && <div className="error-text" style={{ marginBottom: 16 }}>{error}</div>}
+      {notice && <div className="notice">{notice}</div>}
 
       <div className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
@@ -138,12 +150,20 @@ export default function PricingRecommendationsPage() {
                 <th>Confidence</th>
                 <th>Why</th>
                 <th></th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {recommendations.map((r) => (
                 <tr key={r.menuItemId}>
-                  <td>{r.name}</td>
+                  <td>
+                    {r.name}
+                    {r.needsReview && (
+                      <div>
+                        <span className="badge badge-pending" style={{ marginTop: 4 }}>Needs review</span>
+                      </div>
+                    )}
+                  </td>
                   <td className="num">₹{r.currentPrice.toFixed(2)}</td>
                   <td className="num">₹{r.suggestedPrice.toFixed(2)}</td>
                   <td className="num">
@@ -155,9 +175,25 @@ export default function PricingRecommendationsPage() {
                   </td>
                   <td className="muted" style={{ maxWidth: 260 }}>{r.rationale}</td>
                   <td>
+                    {r.needsReview && (
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.8rem" }}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(reviewed[r.menuItemId])}
+                          onChange={(e) => setReviewed((prev) => ({ ...prev, [r.menuItemId]: e.target.checked }))}
+                        />
+                        Reviewed
+                      </label>
+                    )}
+                  </td>
+                  <td>
                     <button
                       className="btn btn-ghost"
-                      disabled={applying !== null || r.suggestedPrice === r.currentPrice}
+                      disabled={
+                        applying !== null ||
+                        r.suggestedPrice === r.currentPrice ||
+                        (r.needsReview && !reviewed[r.menuItemId])
+                      }
                       onClick={() => apply(r.menuItemId)}
                     >
                       {applying === r.menuItemId ? "Applying…" : "Apply"}

@@ -5,6 +5,8 @@
 // down (stimulate volume); magnitude always clamped by the tenant's
 // configured max %-change and min/max price. No LLM anywhere here.
 
+import type { PricingRoundingRule } from "@hpas/types";
+
 export interface ItemPricingSignal {
   menuItemId: string;
   name: string;
@@ -19,6 +21,9 @@ export interface PricingBounds {
   maxChangePercent: number;
   /** Item's category matches an active festival window — small extra upward nudge. */
   festivalBoost?: boolean;
+  roundingRule?: PricingRoundingRule;
+  /** When false, recommendations never need review regardless of confidence/bounds. */
+  safetyNetEnabled?: boolean;
 }
 
 export interface PriceRecommendationResult {
@@ -29,11 +34,36 @@ export interface PriceRecommendationResult {
   changePercent: number;
   demandTrend: "rising" | "falling" | "flat";
   confidence: "low" | "medium" | "high";
+  needsReview: boolean;
 }
 
 const TREND_THRESHOLD = 0.2;
 const TREND_TO_PERCENT_SCALE = 25;
 const FESTIVAL_BOOST_PERCENT = 5;
+
+/** Charm-pricing, applied as the very last step before re-clamping to bounds. */
+export function applyRounding(price: number, rule: PricingRoundingRule | undefined): number {
+  switch (rule) {
+    case "nearest_5":
+      return Math.round(price / 5) * 5;
+    case "nearest_10":
+      return Math.round(price / 10) * 10;
+    case "end_99":
+      return Math.max(0, Math.floor(price / 10) * 10 - 1 + 0.99);
+    case "end_95":
+      return Math.max(0, Math.floor(price / 10) * 10 - 1 + 0.95);
+    case "none":
+    default:
+      return price;
+  }
+}
+
+function clamp(price: number, bounds: Pick<PricingBounds, "minPrice" | "maxPrice">): number {
+  let clamped = price;
+  if (bounds.minPrice != null) clamped = Math.max(bounds.minPrice, clamped);
+  if (bounds.maxPrice != null) clamped = Math.min(bounds.maxPrice, clamped);
+  return clamped;
+}
 
 export function computePriceRecommendation(
   signal: ItemPricingSignal,
@@ -62,17 +92,20 @@ export function computePriceRecommendation(
     changePercent = Math.min(bounds.maxChangePercent, changePercent + FESTIVAL_BOOST_PERCENT);
   }
 
-  let suggestedPrice = currentPrice * (1 + changePercent / 100);
-  if (bounds.minPrice != null) suggestedPrice = Math.max(bounds.minPrice, suggestedPrice);
-  if (bounds.maxPrice != null) suggestedPrice = Math.min(bounds.maxPrice, suggestedPrice);
-  suggestedPrice = Math.round(suggestedPrice * 100) / 100;
+  const preClampPrice = currentPrice * (1 + changePercent / 100);
+  const clampedPrice = clamp(preClampPrice, bounds);
+  const roundedPrice = clamp(applyRounding(clampedPrice, bounds.roundingRule), bounds);
+  const suggestedPrice = Math.round(roundedPrice * 100) / 100;
 
-  // Recompute the reported % against the clamped price, not the pre-clamp estimate.
+  // Recompute the reported % against the final price, not the pre-clamp estimate.
   const finalChangePercent =
     currentPrice > 0 ? Math.round(((suggestedPrice - currentPrice) / currentPrice) * 10000) / 100 : 0;
 
   const dataVolume = unitsSold90d + unitsSoldPrior90d;
   const confidence: "low" | "medium" | "high" = dataVolume >= 30 ? "high" : dataVolume >= 8 ? "medium" : "low";
+
+  const hitBound = Math.abs(preClampPrice - clampedPrice) > 0.005;
+  const needsReview = bounds.safetyNetEnabled !== false && (confidence === "low" || hitBound);
 
   return {
     menuItemId,
@@ -82,5 +115,6 @@ export function computePriceRecommendation(
     changePercent: finalChangePercent,
     demandTrend,
     confidence,
+    needsReview,
   };
 }

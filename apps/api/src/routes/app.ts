@@ -32,11 +32,22 @@ import {
 import {
   ALL_CAMPAIGN_TYPES,
   couponConfig,
+  personalizationDashboardConfig,
   qrCaptureConfig,
   receiptConfig,
   type CampaignType,
   type CouponTier,
+  type PersonalizationWidget,
+  type PersonalizationWidgetType,
 } from "@hpas/types";
+
+const PERSONALIZATION_WIDGET_TYPES: PersonalizationWidgetType[] = [
+  "customer_stats",
+  "repeat_trend",
+  "segment_sizes",
+  "top_customers",
+  "campaign_ab_compare",
+];
 
 export const appRouter: import("express").Router = Router();
 
@@ -359,6 +370,32 @@ appRouter.put("/settings/engagement", async (req, res) => {
 
   await patchTenantConfig(tenant.id, patch);
   res.json(patch);
+});
+
+// ---------- personalization dashboard (configurable widgets) ----------
+// No new data queries: widgets are rendered client-side from the existing
+// /insights and /campaigns responses. This settings pair only persists the
+// tenant's chosen widget list/order/per-widget config.
+
+appRouter.get("/settings/personalization-dashboard", (req, res) => {
+  res.json({ dashboard: personalizationDashboardConfig(req.tenant!.config) });
+});
+
+appRouter.put("/settings/personalization-dashboard", async (req, res) => {
+  const tenant = req.tenant!;
+  const widgetsBody = Array.isArray(req.body?.dashboard?.widgets) ? req.body.dashboard.widgets : [];
+
+  const widgets: PersonalizationWidget[] = widgetsBody
+    .filter((w: Partial<PersonalizationWidget>) => PERSONALIZATION_WIDGET_TYPES.includes(w.type as PersonalizationWidgetType))
+    .map((w: Partial<PersonalizationWidget>) => ({
+      id: String(w.id ?? "").trim() || `widget-${Math.random().toString(36).slice(2, 10)}`,
+      type: w.type as PersonalizationWidgetType,
+      ...(w.title ? { title: String(w.title).slice(0, 60) } : {}),
+      ...(w.config?.campaignId ? { config: { campaignId: String(w.config.campaignId) } } : {}),
+    }));
+
+  await patchTenantConfig(tenant.id, { personalizationDashboard: { widgets } });
+  res.json({ dashboard: { widgets } });
 });
 
 // ---------- settings ----------

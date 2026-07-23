@@ -40,6 +40,7 @@ const mapPriceRecommendation = (r: any): PriceRecommendation => ({
   demandTrend: r.demand_trend,
   confidence: r.confidence,
   rationale: r.rationale,
+  needsReview: r.needs_review,
   computedAt: r.computed_at,
 });
 
@@ -53,13 +54,14 @@ export async function upsertPriceRecommendations(
     demandTrend: "rising" | "falling" | "flat";
     confidence: "low" | "medium" | "high";
     rationale: string;
+    needsReview: boolean;
   }>
 ): Promise<void> {
   for (const r of rows) {
     await query(
       `INSERT INTO price_recommendations
-         (tenant_id, menu_item_id, current_price, suggested_price, change_percent, demand_trend, confidence, rationale, computed_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+         (tenant_id, menu_item_id, current_price, suggested_price, change_percent, demand_trend, confidence, rationale, needs_review, computed_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
        ON CONFLICT (tenant_id, menu_item_id) DO UPDATE SET
          current_price = EXCLUDED.current_price,
          suggested_price = EXCLUDED.suggested_price,
@@ -67,8 +69,19 @@ export async function upsertPriceRecommendations(
          demand_trend = EXCLUDED.demand_trend,
          confidence = EXCLUDED.confidence,
          rationale = EXCLUDED.rationale,
+         needs_review = EXCLUDED.needs_review,
          computed_at = now()`,
-      [tenantId, r.menuItemId, r.currentPrice, r.suggestedPrice, r.changePercent, r.demandTrend, r.confidence, r.rationale]
+      [
+        tenantId,
+        r.menuItemId,
+        r.currentPrice,
+        r.suggestedPrice,
+        r.changePercent,
+        r.demandTrend,
+        r.confidence,
+        r.rationale,
+        r.needsReview,
+      ]
     );
   }
 }

@@ -422,22 +422,51 @@ graph TD
   other four — `provider.ts` interface + both implementations + validated wrapper) for a
   short plain-language reason per item; any item the model skips falls back to a
   deterministic rationale built from its demand trend, so correctness never depends on the
-  AI call. Recommendations are cached (`price_recommendations` table, one row per item,
-  upserted on refresh) and **never applied automatically** — the tenant applies one or all
-  via `POST /pricing/apply`, which writes the suggested price onto `menu_items.price`, the
-  same "nothing happens without approval" invariant already enforced for campaigns.
+  AI call. As the last step before storing, `computePriceRecommendation` applies the
+  tenant's **rounding rule** (`PricingConfig.roundingRule` — none, nearest ₹5/₹10, or
+  charm-pricing `.99`/`.95`, via `applyRounding`) and re-clamps to bounds (rounding can push
+  slightly outside them), then flags **`needsReview`** (the **safety net**,
+  `PricingConfig.safetyNetEnabled`, default on) whenever confidence is `low` or the
+  recommendation hit its min/max bound. Recommendations are cached (`price_recommendations`
+  table, one row per item, upserted on refresh, `needs_review` column added in migration
+  `008_pricing_safety_net.sql`) and **never applied automatically** — the tenant applies one
+  or all via `POST /pricing/apply`, which writes the suggested price onto `menu_items.price`.
+  The safety net is enforced server-side too, not just in the UI: a single-item apply on a
+  flagged recommendation 409s without `confirmReview: true` in the body, and bulk "apply
+  all" silently skips flagged rows (reporting `skippedNeedsReview`) rather than ever
+  bypassing them — the same "nothing happens without approval" invariant already enforced
+  for campaigns, extended to the safety net specifically.
   **Deliberate scope limit**: this is a bounded demand-trend heuristic, not an econometric
   price-elasticity model — a small shop's transaction volume can't support one.
   *Files:* `packages/core/src/pricing.ts`, `packages/ai/src/{provider,anthropic-provider,mock-provider,index}.ts`,
   `packages/db/src/repos-pricing.ts`, `packages/jobs/src/pricing.ts`,
   `apps/api/src/routes/pricing.ts`, `apps/dashboard/app/pricing/{page,locked}.tsx`
-  (Recommendations) + `apps/dashboard/app/pricing/settings/page.tsx` (Item Settings),
-  migration `007_pricing.sql`.
+  (Recommendations) + `apps/dashboard/app/pricing/settings/page.tsx` (Item Settings — now a
+  card grid: Rounding Rule, Safety Net, Item Bounds), migrations `007_pricing.sql`,
+  `008_pricing_safety_net.sql`.
   *Depends on:* `menu-catalog` (items + prices), `ingestion` (events.items sales history),
   `db-layer`. *Used by:* `dashboard-app`.
-  *Not enabled anywhere yet:* deliberately absent from `tenants/dadus/config.json` and
-  `tenants/_template/config.json` — stays invisible until you explicitly add
-  `"pricing": { "enabled": true, "order": N }` to a paying tenant's config.
+  *Enabled for:* `dadus` (demo tenant) only, as of this writing — every other tenant sees the
+  nav group locked (🔒) as an upsell until you explicitly add
+  `"pricing": { "enabled": true, "order": N }` to their config, same admin-gating mechanism.
+
+- **`personalization-dashboard`** — A tenant-configurable widget board at
+  `/personalization/dashboard`, the first entry in the Personalization nav group. Reuses
+  **existing** computed data — no new backend queries — via a small catalog of 5 widget
+  types: `customer_stats`/`repeat_trend`/`segment_sizes`/`top_customers` (all sourced from
+  the already-existing `GET /insights`) and `campaign_ab_compare` (sourced from `GET
+  /campaigns`, which already returns each sent campaign's `.attribution` — messaged vs.
+  hold-out control — from `computeAttribution`; the widget just re-renders that as an A/B
+  card, defaulting to the most recently sent campaign if the widget has no
+  `config.campaignId` set). The tenant adds/removes/reorders widgets from a picker; the
+  chosen list persists via `GET/PUT /v1/app/settings/personalization-dashboard`
+  (`PersonalizationDashboardConfig` in `packages/types/src/index.ts`, same optional-config +
+  default-accessor idiom as `pricingConfig` — defaults to a 4-widget starter set, everything
+  but `campaign_ab_compare`, since that one needs a specific campaign chosen).
+  *Files:* `apps/dashboard/app/personalization/dashboard/page.tsx`, `settings/personalization-dashboard`
+  routes in `apps/api/src/routes/app.ts`.
+  *Depends on:* `dashboard-insights` (`GET /insights`), `approval-queue` (`GET /campaigns`,
+  including its inline `attribution`), `attribution`. *Used by:* `dashboard-app`.
 
 - **`customer-directory`** — The full customer list (My Customers/`insights` only ever shows
   the top 8 by lifetime spend). `/customers` page: searchable by name/phone, sortable by
@@ -493,11 +522,12 @@ graph TD
 
 - **`dashboard-app`** — Next.js shop-owner app (:3000), tenant-themed. Sidebar nav has two
   collapsible groups (`AppShell.tsx`'s `renderGroup`) alongside flat top-level links —
-  **Personalization** (`/insights`, `/customers`, `/segments`, `/campaigns`, `/loyalty` —
-  each still only shown when its own module is enabled) and **Pricing**
-  (`/pricing` Recommendations + `/pricing/settings` Item Settings — the group itself is
-  always shown, locked (🔒) when `modules.pricing` isn't enabled, so it reads as an upsell
-  rather than being invisible; see `ai-pricing`). Flat items: `/menu`, `/data` (uploads +
+  **Personalization** (`/personalization/dashboard` ← `personalization-dashboard`, always
+  first and not gated by its own module key, then `/insights`, `/customers`, `/segments`,
+  `/campaigns`, `/loyalty` — each of those still only shown when its own module is enabled)
+  and **Pricing** (`/pricing` Recommendations + `/pricing/settings` Item Settings — the
+  group itself is always shown, locked (🔒) when `modules.pricing` isn't enabled, so it
+  reads as an upsell rather than being invisible; see `ai-pricing`). Flat items: `/menu`, `/data` (uploads +
   online-order QR desk ← `qr-order-capture`), `/preferences` (toggles + frequency cap +
   receipt/coupon rules ← `coupon-engine`, `order-receipts`), `/settings` (WhatsApp status,
   branding, API key, links to `/settings/billing`), `/billing` (Generate Bill ←

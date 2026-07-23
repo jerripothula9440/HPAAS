@@ -15,7 +15,9 @@ import {
   patchTenantConfig,
   updateMenuItemPrice,
 } from "@hpas/db";
-import { pricingConfig, type PricingConfig, type PricingItemConfig } from "@hpas/types";
+import { pricingConfig, type PricingConfig, type PricingItemConfig, type PricingRoundingRule } from "@hpas/types";
+
+const ROUNDING_RULES: PricingRoundingRule[] = ["none", "nearest_5", "nearest_10", "end_99", "end_95"];
 
 export const pricingRouter: import("express").Router = Router();
 
@@ -61,6 +63,8 @@ pricingRouter.put("/settings/pricing", async (req, res) => {
         Math.min(100, Number(body.defaultMaxChangePercent ?? current.defaultMaxChangePercent))
       ),
       ...(body.occasion ? { occasion: String(body.occasion).trim().slice(0, 100) } : {}),
+      roundingRule: ROUNDING_RULES.includes(body.roundingRule) ? body.roundingRule : (current.roundingRule ?? "none"),
+      safetyNetEnabled: Boolean(body.safetyNetEnabled ?? current.safetyNetEnabled ?? true),
       items,
     },
   };
@@ -90,23 +94,35 @@ pricingRouter.post("/pricing/apply", async (req, res) => {
   const tenant = req.tenant!;
   const menuItemId = req.body?.menuItemId ? String(req.body.menuItemId) : null;
   const applyAll = Boolean(req.body?.all);
+  const confirmReview = Boolean(req.body?.confirmReview);
 
   if (!menuItemId && !applyAll) {
     res.status(400).json({ error: "menuItemId or all is required" });
     return;
   }
 
-  const recommendations = applyAll
-    ? await listPriceRecommendations(tenant.id)
-    : [await getPriceRecommendation(tenant.id, menuItemId!)].filter((r): r is NonNullable<typeof r> => r !== null);
-
-  if (recommendations.length === 0) {
-    res.status(404).json({ error: "no recommendation found" });
+  if (menuItemId) {
+    const recommendation = await getPriceRecommendation(tenant.id, menuItemId);
+    if (!recommendation) {
+      res.status(404).json({ error: "no recommendation found" });
+      return;
+    }
+    if (recommendation.needsReview && !confirmReview) {
+      res.status(409).json({ error: "This recommendation needs review before applying" });
+      return;
+    }
+    await updateMenuItemPrice(tenant.id, recommendation.menuItemId, recommendation.suggestedPrice);
+    res.json({ applied: 1, skippedNeedsReview: 0 });
     return;
   }
 
-  for (const r of recommendations) {
+  // Bulk apply never bypasses the safety net — flagged rows are held back,
+  // never silently applied, matching the "nothing without approval" rule
+  // already enforced for campaigns and discounts.
+  const all = await listPriceRecommendations(tenant.id);
+  const applicable = all.filter((r) => !r.needsReview);
+  for (const r of applicable) {
     await updateMenuItemPrice(tenant.id, r.menuItemId, r.suggestedPrice);
   }
-  res.json({ applied: recommendations.length });
+  res.json({ applied: applicable.length, skippedNeedsReview: all.length - applicable.length });
 });
