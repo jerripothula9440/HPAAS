@@ -134,7 +134,7 @@ skipped, never silently applied). Turn it off only if you're confident enough to
 everything, low-confidence or not, without a second look.
 
 **Business Units in Pricing** — *only shown if you've turned on Business Units at all* (see
-the Personalization Guide, §3.12). This is a **second, independent switch**: you can have
+the Personalization Guide, §3.13). This is a **second, independent switch**: you can have
 branches configured and used everywhere else in the app, and still keep Pricing completely
 tenant-wide by leaving this off. Turn it on to unlock branch-scoped optimization — see §3.4.
 
@@ -157,9 +157,11 @@ tenant-wide by leaving this off. Turn it on to unlock branch-scoped optimization
 
 ### 3.3 Master Data (`/menu`)
 
-The same menu-catalog page used by Personalization's Master Data — see the Personalization
-Guide for the full item-management walkthrough (adding items, photos, CSV import/export,
-print labels). Pricing-specific things to know:
+The same menu-catalog page used by Personalization's Master Data — reachable directly from
+either area's sidebar now, not just via a settings link — see the Personalization Guide §3.12
+for the full item-management walkthrough (adding items, editing, photos, in-stock toggle,
+CSV import/export, print labels) and §3.14 for descriptive tags ("Fast Selling"/"Most
+Favorited"/"Premium"/custom). Pricing-specific things to know:
 
 - The **Current price** the algorithm reasons about is this page's price — editing it here
   changes what "current" means for the next refresh.
@@ -314,7 +316,7 @@ enough that the suggestion keeps hitting them. Either is normal for a new setup 
 sales data accumulates, confidence rises and fewer items will need review.
 
 **"I have two locations and one keeps overselling/underselling the other in price terms."**
-Set up Business Units (Personalization Guide §3.12), turn on "Business Units in Pricing"
+Set up Business Units (Personalization Guide §3.13), turn on "Business Units in Pricing"
 (§3.2), tag your menu items to their actual branches, and use the branch selector on
 Recommendations (§3.4) to refresh/apply per branch instead of tenant-wide.
 

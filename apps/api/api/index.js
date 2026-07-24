@@ -965,7 +965,8 @@ async function updateMenuItem(tenantId, itemId, patch) {
        gst_rate = CASE WHEN $6::boolean THEN $7 ELSE gst_rate END,
        hsn_code = CASE WHEN $8::boolean THEN $9 ELSE hsn_code END,
        business_unit_ids = coalesce($10, business_unit_ids),
-       image_url = CASE WHEN $11::boolean THEN $12 ELSE image_url END
+       image_url = CASE WHEN $11::boolean THEN $12 ELSE image_url END,
+       tags = coalesce($13, tags)
      WHERE tenant_id = $1 AND id = $2
      RETURNING *`, [
     tenantId,
@@ -979,7 +980,8 @@ async function updateMenuItem(tenantId, itemId, patch) {
     patch.hsnCode ?? null,
     patch.businessUnitIds !== void 0 ? JSON.stringify(patch.businessUnitIds) : null,
     "imageUrl" in patch,
-    patch.imageUrl ?? null
+    patch.imageUrl ?? null,
+    patch.tags !== void 0 ? JSON.stringify(patch.tags) : null
   ]);
   return row ? mapMenuItem(row) : null;
 }
@@ -10188,7 +10190,7 @@ menuRouter.post("/menu", async (req, res) => {
     category: String(category ?? "uncategorized").trim() || "uncategorized",
     price: Math.max(0, Number(price) || 0),
     description: typeof description === "string" ? description : null,
-    tags: Array.isArray(tags) ? tags.map(String) : [],
+    tags: Array.isArray(tags) ? [...new Set(tags.map((t) => String(t).trim()).filter(Boolean))].slice(0, 10) : [],
     available: available !== false,
     gstRate: gstRate !== null && gstRate !== void 0 && gstRate !== "" ? Math.max(0, Math.min(28, Number(gstRate))) : null,
     hsnCode: typeof hsnCode === "string" && hsnCode.trim() ? hsnCode.trim() : null,
@@ -10203,7 +10205,7 @@ menuRouter.patch("/menu/:id/availability", async (req, res) => {
 });
 menuRouter.patch("/menu/:id", async (req, res) => {
   const tenant = req.tenant;
-  const { name, category, price, gstRate, hsnCode, businessUnitIds } = req.body ?? {};
+  const { name, category, price, gstRate, hsnCode, businessUnitIds, tags } = req.body ?? {};
   const patch = {};
   if (typeof name === "string" && name.trim()) patch.name = name.trim();
   if (typeof category === "string" && category.trim()) patch.category = category.trim();
@@ -10217,6 +10219,9 @@ menuRouter.patch("/menu/:id", async (req, res) => {
     patch.hsnCode = typeof hsnCode === "string" && hsnCode.trim() ? hsnCode.trim() : null;
   }
   if (Array.isArray(businessUnitIds)) patch.businessUnitIds = businessUnitIds.map(String);
+  if (Array.isArray(tags)) {
+    patch.tags = [...new Set(tags.map((t) => String(t).trim()).filter(Boolean))].slice(0, 10);
+  }
   const item = await updateMenuItem(tenant.id, req.params.id, patch);
   if (!item) {
     res.status(404).json({ error: "item not found" });

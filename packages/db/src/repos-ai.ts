@@ -134,6 +134,7 @@ export async function updateMenuItem(
     hsnCode?: string | null;
     businessUnitIds?: string[];
     imageUrl?: string | null;
+    tags?: string[];
   }
 ): Promise<MenuItem | null> {
   const row = await queryOne(
@@ -144,7 +145,8 @@ export async function updateMenuItem(
        gst_rate = CASE WHEN $6::boolean THEN $7 ELSE gst_rate END,
        hsn_code = CASE WHEN $8::boolean THEN $9 ELSE hsn_code END,
        business_unit_ids = coalesce($10, business_unit_ids),
-       image_url = CASE WHEN $11::boolean THEN $12 ELSE image_url END
+       image_url = CASE WHEN $11::boolean THEN $12 ELSE image_url END,
+       tags = coalesce($13, tags)
      WHERE tenant_id = $1 AND id = $2
      RETURNING *`,
     [
@@ -160,6 +162,7 @@ export async function updateMenuItem(
       patch.businessUnitIds !== undefined ? JSON.stringify(patch.businessUnitIds) : null,
       "imageUrl" in patch,
       patch.imageUrl ?? null,
+      patch.tags !== undefined ? JSON.stringify(patch.tags) : null,
     ]
   );
   return row ? mapMenuItem(row) : null;

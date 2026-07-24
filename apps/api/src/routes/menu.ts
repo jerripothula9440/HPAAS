@@ -116,7 +116,9 @@ menuRouter.post("/menu", async (req, res) => {
     category: String(category ?? "uncategorized").trim() || "uncategorized",
     price: Math.max(0, Number(price) || 0),
     description: typeof description === "string" ? description : null,
-    tags: Array.isArray(tags) ? tags.map(String) : [],
+    tags: Array.isArray(tags)
+      ? [...new Set(tags.map((t: unknown) => String(t).trim()).filter(Boolean))].slice(0, 10)
+      : [],
     available: available !== false,
     gstRate: gstRate !== null && gstRate !== undefined && gstRate !== "" ? Math.max(0, Math.min(28, Number(gstRate))) : null,
     hsnCode: typeof hsnCode === "string" && hsnCode.trim() ? hsnCode.trim() : null,
@@ -134,7 +136,7 @@ menuRouter.patch("/menu/:id/availability", async (req, res) => {
 /** General edit — used for inline price/category/GST/business-unit changes on Master Data. */
 menuRouter.patch("/menu/:id", async (req, res) => {
   const tenant = req.tenant!;
-  const { name, category, price, gstRate, hsnCode, businessUnitIds } = req.body ?? {};
+  const { name, category, price, gstRate, hsnCode, businessUnitIds, tags } = req.body ?? {};
   const patch: Parameters<typeof updateMenuItem>[2] = {};
   if (typeof name === "string" && name.trim()) patch.name = name.trim();
   if (typeof category === "string" && category.trim()) patch.category = category.trim();
@@ -148,6 +150,9 @@ menuRouter.patch("/menu/:id", async (req, res) => {
     patch.hsnCode = typeof hsnCode === "string" && hsnCode.trim() ? hsnCode.trim() : null;
   }
   if (Array.isArray(businessUnitIds)) patch.businessUnitIds = businessUnitIds.map(String);
+  if (Array.isArray(tags)) {
+    patch.tags = [...new Set(tags.map((t: unknown) => String(t).trim()).filter(Boolean))].slice(0, 10);
+  }
 
   const item = await updateMenuItem(tenant.id, req.params.id, patch);
   if (!item) {

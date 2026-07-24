@@ -27,7 +27,13 @@ interface MenuItem {
   businessUnitIds: string[];
   imageUrl: string | null;
   branchPrice: number | null;
+  tags: string[];
 }
+
+// A shop can tag an item with none, one, or several of these — purely
+// descriptive (shown as badges), no effect on recommendations/pricing.
+// "New tag" lets a tenant add anything beyond this starter set.
+const PRESET_TAGS = ["Fast Selling", "Most Favorited", "Premium"];
 
 export default function MenuPage() {
   const router = useRouter();
@@ -45,6 +51,8 @@ export default function MenuPage() {
   const [gstRate, setGstRate] = useState("");
   const [hsnCode, setHsnCode] = useState("");
   const [newItemUnits, setNewItemUnits] = useState<Set<string>>(new Set());
+  const [newItemTags, setNewItemTags] = useState<Set<string>>(new Set());
+  const [newTagInput, setNewTagInput] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [editingId, setEditingId] = useState("");
@@ -55,7 +63,9 @@ export default function MenuPage() {
     gstRate: string;
     hsnCode: string;
     businessUnitIds: Set<string>;
+    tags: Set<string>;
   } | null>(null);
+  const [editTagInput, setEditTagInput] = useState("");
 
   const pricingEnabled = Boolean(getSession()?.tenant.config.modules.pricing?.enabled);
   const [recommendations, setRecommendations] = useState<Record<string, Recommendation>>({});
@@ -98,6 +108,7 @@ export default function MenuPage() {
           gstRate: gstRate ? Number(gstRate) : null,
           hsnCode: hsnCode.trim() || null,
           businessUnitIds: [...newItemUnits],
+          tags: [...newItemTags],
         }),
       });
       setName("");
@@ -106,6 +117,8 @@ export default function MenuPage() {
       setGstRate("");
       setHsnCode("");
       setNewItemUnits(new Set());
+      setNewItemTags(new Set());
+      setNewTagInput("");
       load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -150,7 +163,9 @@ export default function MenuPage() {
       gstRate: item.gstRate !== null ? String(item.gstRate) : "",
       hsnCode: item.hsnCode ?? "",
       businessUnitIds: new Set(item.businessUnitIds),
+      tags: new Set(item.tags),
     });
+    setEditTagInput("");
   }
 
   async function saveEdit(itemId: string) {
@@ -167,6 +182,7 @@ export default function MenuPage() {
           gstRate: editForm.gstRate ? Number(editForm.gstRate) : null,
           hsnCode: editForm.hsnCode.trim() || null,
           businessUnitIds: [...editForm.businessUnitIds],
+          tags: [...editForm.tags],
         }),
       });
       setEditingId("");
@@ -337,7 +353,7 @@ export default function MenuPage() {
           </button>
         </form>
         {businessUnitsActive && (
-          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
             <span className="muted" style={{ fontSize: "0.85rem" }}>Sold at (blank = every branch):</span>
             {businessUnits.map((u) => (
               <label key={u.id} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem" }}>
@@ -351,6 +367,29 @@ export default function MenuPage() {
             ))}
           </div>
         )}
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span className="muted" style={{ fontSize: "0.85rem" }}>Tags (optional):</span>
+          {[...PRESET_TAGS, ...[...newItemTags].filter((t) => !PRESET_TAGS.includes(t))].map((t) => (
+            <label key={t} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem" }}>
+              <input type="checkbox" checked={newItemTags.has(t)} onChange={() => setNewItemTags(toggleSet(newItemTags, t))} />
+              {t}
+            </label>
+          ))}
+          <input
+            type="text"
+            value={newTagInput}
+            onChange={(e) => setNewTagInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && newTagInput.trim()) {
+                e.preventDefault();
+                setNewItemTags(new Set([...newItemTags, newTagInput.trim()]));
+                setNewTagInput("");
+              }
+            }}
+            placeholder="Custom tag…"
+            style={{ maxWidth: 140, fontSize: "0.85rem" }}
+          />
+        </div>
       </div>
 
       {businessUnitsActive && (
@@ -390,6 +429,7 @@ export default function MenuPage() {
                   <th>GST</th>
                   {businessUnitsActive && <th>Branches</th>}
                   {businessUnitsActive && filterBusinessUnitId && <th className="num">Branch price</th>}
+                  <th>Tags</th>
                   <th>In stock</th>
                   <th></th>
                 </tr>
@@ -398,7 +438,7 @@ export default function MenuPage() {
                 {list.map((item) =>
                   editingId === item.id && editForm ? (
                     <tr key={item.id}>
-                      <td colSpan={businessUnitsActive ? (filterBusinessUnitId ? 9 : 8) : 7}>
+                      <td colSpan={businessUnitsActive ? (filterBusinessUnitId ? 10 : 9) : 8}>
                         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", padding: "6px 0" }}>
                           <input type="text" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={{ maxWidth: 200 }} />
                           <input type="text" value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })} style={{ maxWidth: 160 }} />
@@ -425,6 +465,30 @@ export default function MenuPage() {
                               {u.name}
                             </label>
                           ))}
+                          {[...PRESET_TAGS, ...[...editForm.tags].filter((t) => !PRESET_TAGS.includes(t))].map((t) => (
+                            <label key={t} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem" }}>
+                              <input
+                                type="checkbox"
+                                checked={editForm.tags.has(t)}
+                                onChange={() => setEditForm({ ...editForm, tags: toggleSet(editForm.tags, t) })}
+                              />
+                              {t}
+                            </label>
+                          ))}
+                          <input
+                            type="text"
+                            value={editTagInput}
+                            onChange={(e) => setEditTagInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && editTagInput.trim()) {
+                                e.preventDefault();
+                                setEditForm({ ...editForm, tags: new Set([...editForm.tags, editTagInput.trim()]) });
+                                setEditTagInput("");
+                              }
+                            }}
+                            placeholder="Custom tag…"
+                            style={{ maxWidth: 120, fontSize: "0.85rem" }}
+                          />
                           <label className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: "0.82rem", cursor: "pointer" }}>
                             {item.imageUrl ? "Replace photo" : "Add photo"}
                             <input
@@ -495,6 +559,17 @@ export default function MenuPage() {
                           />
                         </td>
                       )}
+                      <td style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {item.tags.length === 0 ? (
+                          <span className="muted" style={{ fontSize: "0.8rem" }}>—</span>
+                        ) : (
+                          item.tags.map((t) => (
+                            <span key={t} className="badge badge-type" style={{ fontSize: "0.75rem" }}>
+                              {t}
+                            </span>
+                          ))
+                        )}
+                      </td>
                       <td>
                         <label className="toggle">
                           <input type="checkbox" checked={item.available} disabled={busy === item.id} onChange={() => toggle(item)} />

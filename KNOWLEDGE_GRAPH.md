@@ -360,7 +360,7 @@ graph TD
   `POST /menu/import` (multipart, `multer` memory storage same as `ingest.ts`'s
   `POST /uploads`) bulk-upserts from a CSV via the existing dependency-free `parseCsv`
   (`packages/core/src/csv.ts`) and `upsertMenuItem`. `PATCH /menu/:id` is a general field
-  edit (name/category/price/gstRate/hsnCode/businessUnitIds) — used for inline edits on
+  edit (name/category/price/gstRate/hsnCode/businessUnitIds/tags) — used for inline edits on
   Master Data, distinct from the narrower `PATCH /menu/:id/availability`.
   **Item photos**: `image_url` column (migration `011_menu_item_images.sql`) stores a data
   URI — small shop catalogs, no external object storage needed. `POST /menu/:id/image`
@@ -369,12 +369,23 @@ graph TD
   `010_business_units.sql`) — which branches (see `business-units`) sell this item; empty
   means every branch. `GET /menu?businessUnitId=` filters to items tagged to that branch (or
   untagged) and, when given, also returns each item's `branchPrice` (see `business-units`'
-  per-branch price override). **Print labels**: `/menu/labels?ids=<comma-separated>` is a
-  bare (no `AppShell`) printable price-tag sheet for selected items — no backend beyond
+  per-branch price override). **Master Data is reachable from both areas** (see
+  `dashboard-app`) — Business Units and item↔branch association are a single tenant-wide
+  concern, never area-specific, so a Personalization-only tenant can add branches and tag
+  items exactly the same as a Pricing tenant.
+  **Descriptive tags**: separate `tags` JSONB column (pre-existing from
+  `003_ai_native.sql`, wired into the dashboard this batch) — free-text labels a tenant may
+  or may not bother with, purely cosmetic (shown as badges, no effect on recommendations,
+  pricing, or availability). Dashboard offers three starter presets ("Fast Selling", "Most
+  Favorited", "Premium") as checkboxes plus a free-text box for anything else; sanitized
+  server-side (deduped, trimmed, capped at 10 tags) in `POST /menu` and `PATCH /menu/:id`.
+  Distinct from `available` (in-stock/out-of-stock), which stays a real toggle gating
+  recommendations/billing, not just a tag. **Print labels**: `/menu/labels?ids=<comma-separated>`
+  is a bare (no `AppShell`) printable price-tag sheet for selected items — no backend beyond
   `GET /menu`, just `@media print` CSS and the browser's print dialog.
   *Files:* `packages/core/src/menu.ts`, `apps/api/src/routes/menu.ts`,
   `apps/dashboard/app/menu/{page,labels/page}.tsx`, repos in `packages/db/src/repos-ai.ts`,
-  migrations `010_business_units.sql`, `011_menu_item_images.sql`.
+  migrations `003_ai_native.sql` (tags), `010_business_units.sql`, `011_menu_item_images.sql`.
   *Depends on:* `db-layer`, `business-units` (tags + branch price). *Used by:*
   `counter-recommendations`, `ai-campaign-copy`, `tenant-onboarding`, `qr-order-capture`
   (dashboard item picker for QR orders), `gst-billing` (per-item tax rate/HSN, branch
@@ -628,6 +639,15 @@ graph TD
   more than a tag, since a shared item still has exactly one base price otherwise. See
   `ai-pricing` for how refresh/apply use this, and `gst-billing` for how Billing defaults a
   branch's effective price.
+  **Manage items from the branch side**: each branch row in `BusinessUnitsCard` has a
+  "Manage items" toggle that fetches the tenant's *entire* menu (`GET /menu`, unfiltered) and
+  shows one checkbox per item — ticked if that item's `businessUnitIds` already includes this
+  branch. Ticking/unticking calls the same `PATCH /menu/:id` general-edit route Master Data's
+  inline editor uses (just with `businessUnitIds` toggled), so this is a second entry point
+  into the identical data, not a parallel mechanism — a change made here shows up on Master
+  Data's per-item checkboxes and vice versa. Since `BusinessUnitsCard` is the one component
+  embedded in both `/personalization/settings` and `/pricing/settings`, this branch-side item
+  management is available from both areas automatically.
   *Files:* `packages/types/src/index.ts` (`BusinessUnit`, `BusinessUnitsConfig`,
   `businessUnitsConfig()`), `GET/PUT /settings/business-units` in
   `apps/api/src/routes/app.ts`, `apps/dashboard/components/BusinessUnitsCard.tsx`,

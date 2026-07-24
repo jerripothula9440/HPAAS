@@ -13,8 +13,11 @@ to it.
 
 Personalization is everything about knowing your customers and talking to them well:
 
-- Building a customer directory from your sales (POS uploads, online-order QR codes, the
-  counter screen, or GST billing) — automatically, without extra data entry.
+- Building a customer directory from your sales (POS uploads, online-order QR codes, or GST
+  billing — including walk-in enrollment with no purchase, via Billing's counter card) —
+  automatically, without extra data entry.
+- Managing your **menu/catalog** (Master Data) — the same shared item list Pricing,
+  campaigns, and billing all reference, reachable here even without Pricing purchased.
 - Grouping customers into **segments** ("big spenders who haven't visited in 2 months").
 - Sending WhatsApp campaigns to those segments, with AI-written (but human-approved)
   message copy.
@@ -219,7 +222,7 @@ The full customer list — not just the top 8. Use this to:
 
 - **Search** by name or phone (top-left box).
 - **Sort** by Most recent, Top spenders, Most purchases, or Alphabetical.
-- **Filter by branch** — only shown if you've set up Business Units (§3.9) and switched them
+- **Filter by branch** — only shown if you've set up Business Units (§3.13) and switched them
   on; lets you see only customers tagged to one branch.
 
 Each row shows favorite item, lifetime spend, orders in the last 90 days, last visit, and
@@ -352,11 +355,63 @@ Three cards:
   export just its current audience as CSV — useful for taking your own data elsewhere or
   archiving it.
 
-Also embedded here: the **Business Units** card (§3.12) — since branches are relevant to
+Also embedded here: the **Business Units** card (§3.13) — since branches are relevant to
 both Personalization and Pricing, it's managed from either area's Settings page and stays
 in sync.
 
-### 3.12 Business Units (branches)
+### 3.12 Master Data (`/menu`) — requires `menu` module
+
+Your menu/catalog — what you actually sell, with prices. Every other feature that references
+"an item" (counter suggestions on Billing, campaign copy, QR order capture, GST invoices,
+Pricing's recommendations) only ever points at something on this list, so it's worth getting
+right early. It's a direct nav item in **both** Personalization's and Pricing's sidebar —
+same page, same data, either way; a tenant with only Personalization purchased manages their
+whole catalog here with no need for Pricing at all.
+
+**Adding an item**: the "Add an item" card at the top — name, category (free text, e.g.
+"sweets"), price, GST %, HSN code (all except name are optional at add time; fill in GST/HSN
+later per item, or set a tenant-wide default under Billing → Billing details). Instead of
+typing every item by hand, click **Import from sales history** once — it scans everything
+you've ever sold (from POS uploads, QR orders, or bills) and adds any name that isn't already
+on the menu, with its most common category and median price. Re-running it later only adds
+what's still missing, so it's safe to click again after a fresh POS upload.
+
+**Editing an item**: click **Edit** on its row to open an inline form — name, category,
+price, GST %, HSN, which branches sell it (if Business Units are on, §3.13), tags (§3.14),
+and a photo. If Pricing is enabled and the item has a current recommendation, you'll also see
+"AI suggests ₹X (trend) — Use this price" right next to the price field (see the Pricing
+Guide §3.3) — a one-click fill, not an auto-apply; you still hit **Save**.
+
+**Photos**: "Add photo"/"Replace photo" on the edit form (any image, 800KB max) — shown as a
+small thumbnail in the item's row. "Remove photo" clears it. Stored inline (no external image
+hosting to configure).
+
+**In stock / Out of stock**: the toggle at the right of each row. This is the one switch with
+real teeth — an out-of-stock item is skipped by counter recommendations, campaign copy, and
+QR order capture, unlike the purely cosmetic tags (§3.14). Flip it back on the moment it's
+available again.
+
+**Branches and branch price**: covered fully in §3.13 — checkboxes on each item for which
+branch(es) sell it, a "Filter by branch" dropdown above the table, and (with one branch
+selected) an editable branch-specific price override.
+
+**Bulk import/export**: **Download CSV** exports every item (name, category, price, GST
+rate, HSN code, in-stock, branch tags, plus its current Pricing recommendation if any —
+blank if you don't have Pricing or haven't refreshed yet). **Upload CSV** bulk-creates or
+updates items from a CSV with columns `name, category, price, gstRate, hsnCode, available,
+businessUnitIds` (semicolon-separated branch IDs in `businessUnitIds`; everything but `name`
+and `price` is optional) — existing items are matched by name and updated in place, new names
+are created. Any row that fails (missing name, unreadable price) is reported back with its
+row number and reason; the rest of the file still goes through.
+
+**Print Labels**: tick the checkbox on the left of any rows you want price tags for, then
+click **Print Labels** at the top — opens a bare printable sheet (`/menu/labels`, no
+navigation chrome) sized for a standard label sheet, ready for your browser's print dialog.
+
+**Deleting an item**: **Remove** on its row. This is permanent — if the item has price
+history you want to keep referencing, consider marking it Out of stock instead.
+
+### 3.13 Business Units (branches)
 
 A **tag/filter feature**, not a way to split your shop into separate businesses — you still
 have one customer list, one menu, and one campaign/segment engine either way. It exists so
@@ -380,12 +435,36 @@ card (found in both Personalization Settings and Pricing Item Settings):
    - **Master Data (menu)**: business-unit checkboxes on each item (which branches sell it —
      leave all unchecked to mean "every branch"), a branch filter dropdown, and (when one
      specific branch is selected) an editable **branch price** column.
+   - **The Business Units card itself**: click **Manage items** next to any branch to flip
+     it around — instead of going item-by-item on Master Data, you get one list of your
+     *entire* menu with a checkbox per item for "is this sold at this branch?" Tick or untick
+     any number of items right there. It's the exact same data as the checkboxes on Master
+     Data (ticking here is identical to ticking there), just handier when you're setting up a
+     new branch and want to add a dozen items to it in one sitting instead of opening a dozen
+     items one at a time.
    - **Pricing Recommendations**: see the Pricing Guide — a separate switch there controls
      whether pricing itself uses branches.
 
 You can flip the master toggle back off at any time — your branch list and any branch-price
 overrides are kept, just hidden, so turning it back on later picks up right where you left
 off.
+
+Business Units and item↔branch tagging are **one tenant-wide setting, not two** — whichever
+area's Settings page you add a branch from, it shows up identically in the other area
+immediately (same `GET/PUT /settings/business-units` underneath). The same applies to
+**Master Data itself**: `/menu` is a direct nav item in *both* Personalization's and
+Pricing's sidebar (not just linked from Settings), so a Personalization-only tenant — no
+Pricing purchased at all — can still add branches and tag every item to them.
+
+### 3.14 Item tags (on Master Data)
+
+Purely descriptive labels you can optionally stick on a menu item — shown as small badges,
+with **zero effect** on recommendations, pricing, or availability (that's still the separate
+**In stock** toggle). Three starter presets are offered as checkboxes on the add-item form
+and on each item's **Edit** form — **Fast Selling**, **Most Favorited**, **Premium** — plus a
+free-text box for anything else you want to call out ("Gift-worthy," "Spicy," whatever fits
+your shop). Leave all of them unchecked if you don't care to use tags at all — nothing is
+mandatory. A tag applies only to that one item; there's no tenant-wide tag list to manage.
 
 ---
 
@@ -407,7 +486,7 @@ mode). If it is `live`, check that the customer has an opt-in interaction on fil
 your message template is Meta-approved (§2.2).
 
 **"I want two branches to look separate in reporting."**
-Turn on Business Units (§3.12), add both branches, and start tagging invoices with a branch
+Turn on Business Units (§3.13), add both branches, and start tagging invoices with a branch
 when you generate them. Give it a few days of billing before the filters show anything
 meaningful.
 
